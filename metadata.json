@@ -1,0 +1,6 @@
+{
+  "name": "FiberTrack",
+  "description": "A nutrition tracking app focused on fiber intake with a vertical daily timeline and Google Sheets integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
