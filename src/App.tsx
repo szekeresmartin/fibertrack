@@ -18,7 +18,8 @@ import {
   ArrowLeft,
   LogOut,
   Mail,
-  Loader2
+  Loader2,
+  Lock
 } from 'lucide-react';
 import { Food, Meal, DailyTotals, MealItem } from './types';
 import { fetchFoodsFromSheets } from './lib/googleSheets';
@@ -53,23 +54,23 @@ export default function App() {
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Auth State
+  // --------------------------------------
+  // Root-level Auth Handler
+  // --------------------------------------
   useEffect(() => {
-    const initializeAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+    supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
       setSessionLoading(false);
-    };
-
-    initializeAuth();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'TOKEN_REFRESH') {
-        setUser(session?.user ?? null);
-      }
     });
 
-    return () => subscription.unsubscribe();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setSessionLoading(false);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   // Fetch Meals from Supabase
@@ -187,7 +188,7 @@ export default function App() {
   }, [meals]);
 
   const handleSaveMeal = async (meal: Partial<Meal>) => {
-    if (!user) return;
+    if (!user) throw new Error("User not authenticated.");
 
     // Manually strictly construct payload to avoid bad columns
     const mealPayload: any = {
@@ -208,8 +209,7 @@ export default function App() {
 
     if (error) {
       console.error('Error saving meal:', error);
-      alert('Failed to save meal. Please ensure your database is set up correctly.');
-      return;
+      throw new Error(error.message || 'Failed to save meal info.');
     }
 
     if (meal.items && meal.items.length > 0) {
@@ -226,6 +226,7 @@ export default function App() {
       const { error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert);
       if (itemsError) {
         console.error('Error saving meal items:', itemsError);
+        throw new Error(itemsError.message || 'Failed to save meal items.');
       }
     }
 
@@ -465,6 +466,7 @@ export default function App() {
             onSave={handleSaveMeal}
             editingMeal={editingMeal}
             foods={foods}
+            existingMeals={meals}
           />
         )}
       </AnimatePresence>
@@ -473,31 +475,55 @@ export default function App() {
 }
 
 function Login() {
+  useEffect(() => {
+    console.log("PASSWORD LOGIN RENDERED");
+  }, []);
+
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isLoginMode, setIsLoginMode] = useState(true);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setMessage(null);
 
-    const devMode = import.meta.env.DEV;
-    const redirectUrl = devMode ? 'http://localhost:3000' : window.location.origin;
+    if (!email || !password) {
+      setMessage({ type: 'error', text: 'Email and password are required' });
+      setLoading(false);
+      return;
+    }
 
-    console.log('[Auth] Using redirect URL:', redirectUrl);
+    console.log(`[Auth] Attempting ${isLoginMode ? 'login' : 'signup'} with password...`);
 
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        emailRedirectTo: redirectUrl,
-      },
-    });
+    let error = null;
+    let data: any = null;
+
+    if (isLoginMode) {
+      const resp = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      error = resp.error;
+      data = resp.data;
+    } else {
+      const resp = await supabase.auth.signUp({
+        email,
+        password,
+      });
+      error = resp.error;
+      data = resp.data;
+    }
 
     if (error) {
       setMessage({ type: 'error', text: error.message });
     } else {
-      setMessage({ type: 'success', text: 'Check your email for the magic link!' });
+      if (!isLoginMode && data?.user && !data?.session) {
+        setMessage({ type: 'success', text: 'Account created! Please check your email to confirm.' });
+      }
+      // If it successfully created a session, Supabase's global onAuthStateChange catches it and updates <App /> automatically.
     }
     setLoading(false);
   };
@@ -517,19 +543,36 @@ function Login() {
           <p className="text-subtle text-[14px]">Simple daily fiber tracking</p>
         </div>
 
-        <form onSubmit={handleLogin} className="space-y-6">
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Email Address</label>
-            <div className="relative">
-              <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-ink"
-              />
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Email Address</label>
+              <div className="relative">
+                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-ink"
+                />
+              </div>
+            </div>
+            
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Password</label>
+              <div className="relative">
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
+                <input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-ink"
+                />
+              </div>
             </div>
           </div>
 
@@ -538,7 +581,7 @@ function Login() {
             disabled={loading}
             className="w-full bg-ink text-white py-4 rounded-2xl font-bold text-[14px] uppercase tracking-[0.1em] hover:bg-black transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            {loading ? <Loader2 className="animate-spin" size={20} /> : 'Send Magic Link'}
+            {loading ? <Loader2 className="animate-spin" size={20} /> : (isLoginMode ? 'Sign In' : 'Create Account')}
           </button>
         </form>
 
@@ -556,7 +599,17 @@ function Login() {
         )}
 
         <div className="pt-4 border-t border-border flex flex-col items-center gap-4">
-          <p className="text-[11px] text-subtle uppercase tracking-wider font-bold">Secure login with Supabase</p>
+          <button
+            type="button"
+            onClick={() => {
+              setIsLoginMode(!isLoginMode);
+              setMessage(null);
+            }}
+            className="text-[12px] font-bold text-subtle hover:text-ink transition-colors"
+          >
+            {isLoginMode ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+          </button>
+          <p className="text-[10px] text-subtle/50 uppercase tracking-widest font-bold">Powered by Supabase</p>
         </div>
       </motion.div>
     </div>
@@ -628,16 +681,73 @@ function MealBlock({ meal, foods, onEdit, onDelete }: MealBlockProps) {
 interface MealModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (meal: Partial<Meal>) => void;
+  onSave: (meal: Partial<Meal>) => Promise<void>;
   editingMeal: Meal | null;
   foods: Food[];
+  existingMeals: Meal[];
 }
 
-function MealModal({ isOpen, onClose, onSave, editingMeal, foods }: MealModalProps) {
+function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals }: MealModalProps) {
   const [name, setName] = useState(editingMeal?.name || '');
   const [time, setTime] = useState(editingMeal?.time || format(new Date(), 'HH:mm'));
-  const [items, setItems] = useState<MealItem[]>(editingMeal?.items || []);
+  const [items, setItems] = useState<any[]>(editingMeal?.items || []);
   const [search, setSearch] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const handleSaveClick = async () => {
+    setErrorMsg(null);
+    
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      setErrorMsg("Meal name cannot be empty.");
+      return;
+    }
+
+    const today = new Date().toDateString();
+
+    const isDuplicate = existingMeals.some(m => {
+      const mDate = (m as any).created_at ? new Date((m as any).created_at).toDateString() : today;
+      const tDate = (editingMeal as any)?.created_at ? new Date((editingMeal as any).created_at).toDateString() : today;
+      
+      return mDate === tDate && 
+             m.name.trim().toLowerCase() === trimmedName.toLowerCase() && 
+             m.id !== editingMeal?.id;
+    });
+
+    console.log('[Validation] Form date assumptions -> editing_meal:', (editingMeal as any)?.created_at, 'today:', today);
+    console.log('[Validation] isDuplicate check result:', isDuplicate);
+
+    if (isDuplicate) {
+      setErrorMsg("Meal with this name already exists today.");
+      return;
+    }
+
+    if (items.length === 0) {
+      setErrorMsg("Please add at least one food item.");
+      return;
+    }
+    
+    for (const item of items) {
+      if (item.quantityGrams === '' || !item.quantityGrams || Number(item.quantityGrams) <= 0) {
+        setErrorMsg("All foods must have a valid quantity greater than 0g.");
+        return;
+      }
+    }
+
+    setIsSaving(true);
+    try {
+      await onSave({
+        ...(editingMeal ? { id: editingMeal.id } : {}),
+        name: trimmedName,
+        time,
+        items: items.map(item => ({ ...item, quantityGrams: Number(item.quantityGrams) }))
+      } as Meal);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'An unexpected error occurred while saving.');
+      setIsSaving(false);
+    }
+  };
 
   const filteredFoods = foods
     .filter(f => (f.name || '').toLowerCase().includes(search.toLowerCase()))
@@ -656,8 +766,8 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods }: MealModalPro
     setItems(items.filter((_, i) => i !== index));
   };
 
-  const updateQuantity = (index: number, qty: number) => {
-    setItems(items.map((item, i) => i === index ? { ...item, quantityGrams: qty } : item));
+  const updateQuantity = (index: number, val: any) => {
+    setItems(items.map((item, i) => i === index ? { ...item, quantityGrams: val } : item));
   };
 
   const mealTotals = useMemo(() => {
@@ -714,7 +824,7 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods }: MealModalPro
           <div className="space-y-4">
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Add Foods</label>
-              <div className="relative">
+              <div className="relative z-50">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
                 <input
                   type="text"
@@ -724,7 +834,7 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods }: MealModalPro
                   className="w-full pl-12 pr-4 py-3 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500 transition-all"
                 />
                 {search && (
-                  <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-xl border border-gray-100 z-10 overflow-hidden">
+                  <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.15)] border border-gray-100 z-[100] max-h-60 overflow-y-auto">
                     {filteredFoods.map(food => (
                       <button
                         key={food.id}
@@ -758,7 +868,9 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods }: MealModalPro
                       <input
                         type="number"
                         value={item.quantityGrams}
-                        onChange={e => updateQuantity(i, Number(e.target.value))}
+                        onFocus={(e) => { e.target.value = ''; updateQuantity(i, ''); }}
+                        onClick={(e) => { e.target.value = ''; updateQuantity(i, ''); }}
+                        onChange={e => updateQuantity(i, e.target.value === '' ? '' : Number(e.target.value))}
                         className="w-20 px-2 py-1 bg-white border border-gray-200 rounded-lg text-sm text-center"
                       />
                       <span className="text-xs text-gray-400">g</span>
@@ -771,8 +883,16 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods }: MealModalPro
           </div>
         </div>
 
-        <div className="p-6 bg-gray-50 border-t border-gray-100">
-          <div className="flex justify-between items-center mb-4">
+        <div className="p-6 bg-gray-50 border-t border-gray-100 flex flex-col gap-4">
+          {errorMsg && (
+            <div className="bg-red-50 text-red-700 p-3 rounded-xl text-sm border border-red-100 flex items-center justify-between">
+              <span>{errorMsg}</span>
+              <button onClick={() => setErrorMsg(null)} className="p-1 hover:bg-red-100 rounded-full text-red-400 hover:text-red-600 transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+          )}
+          <div className="flex justify-between items-center">
             <div className="flex gap-4">
               <div className="text-center">
                 <div className="text-lg font-bold text-green-600">{mealTotals.total_fiber.toFixed(1)}g</div>
@@ -784,16 +904,11 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods }: MealModalPro
               </div>
             </div>
             <button
-              onClick={() => onSave({
-                ...(editingMeal ? { id: editingMeal.id } : {}),
-                name: name || 'Meal',
-                time,
-                items
-              } as Meal)}
-              disabled={items.length === 0}
-              className="px-8 py-3 bg-green-600 text-white rounded-xl font-bold shadow-lg shadow-green-200 hover:bg-green-700 disabled:opacity-50 disabled:shadow-none transition-all active:scale-95"
+              onClick={handleSaveClick}
+              disabled={isSaving}
+              className="px-8 py-3 bg-green-600 text-white rounded-xl font-bold shadow-lg shadow-green-200 hover:bg-green-700 disabled:opacity-50 disabled:shadow-none transition-all active:scale-95 flex items-center gap-2"
             >
-              Save Meal
+              {isSaving ? <Loader2 className="animate-spin" size={20} /> : 'Save Meal'}
             </button>
           </div>
         </div>
