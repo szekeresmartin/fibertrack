@@ -53,6 +53,7 @@ export default function App() {
   const [isMealModalOpen, setIsMealModalOpen] = useState(false);
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRecoveryMode, setIsRecoveryMode] = useState(false);
 
   // --------------------------------------
   // Root-level Auth Handler
@@ -63,7 +64,10 @@ export default function App() {
       setSessionLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsRecoveryMode(true);
+      }
       setUser(session?.user ?? null);
       setSessionLoading(false);
     });
@@ -273,6 +277,10 @@ export default function App() {
     return <Login />;
   }
 
+  if (isRecoveryMode) {
+    return <UpdatePassword onComplete={() => setIsRecoveryMode(false)} />;
+  }
+
   return (
     <div className="min-h-screen bg-bg text-ink font-sans flex flex-col">
       {/* Header */}
@@ -474,6 +482,61 @@ export default function App() {
   );
 }
 
+function UpdatePassword({ onComplete }: { onComplete: () => void }) {
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!password) return;
+    
+    setLoading(true);
+    setMessage(null);
+
+    const { error } = await supabase.auth.updateUser({ password });
+
+    if (error) {
+      setMessage({ type: 'error', text: error.message });
+      setLoading(false);
+    } else {
+      setMessage({ type: 'success', text: 'Password successfully updated!' });
+      setTimeout(() => onComplete(), 2000);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-bg flex flex-col items-center justify-center p-6">
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-sm bg-card p-10 rounded-[32px] border border-border shadow-2xl space-y-8">
+        <div className="text-center space-y-2">
+          <div className="w-16 h-16 bg-accent/10 text-accent rounded-3xl flex items-center justify-center mx-auto mb-4">
+             <Lock size={32} strokeWidth={2.5} />
+          </div>
+          <h1 className="text-[24px] font-[800] tracking-[-1px] leading-tight">New Password</h1>
+          <p className="text-subtle text-[14px]">Enter your new password below</p>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Password</label>
+            <div className="relative">
+              <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
+              <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-ink" />
+            </div>
+          </div>
+          <button type="submit" disabled={loading} className="w-full bg-ink text-white py-4 rounded-2xl font-bold text-[14px] uppercase tracking-[0.1em] hover:bg-black transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2">
+            {loading ? <Loader2 className="animate-spin" size={20} /> : 'Save Password'}
+          </button>
+        </form>
+        {message && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className={cn("p-4 rounded-2xl text-[13px] font-medium text-center", message.type === 'success' ? "bg-green-50 text-green-700 border border-green-100" : "bg-red-50 text-red-700 border border-red-100")}>
+            {message.text}
+          </motion.div>
+        )}
+      </motion.div>
+    </div>
+  );
+}
+
 function Login() {
   useEffect(() => {
     console.log("PASSWORD LOGIN RENDERED");
@@ -482,6 +545,7 @@ function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoginMode, setIsLoginMode] = useState(true);
+  const [isForgotPasswordMode, setIsForgotPasswordMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
@@ -489,6 +553,26 @@ function Login() {
     e.preventDefault();
     setLoading(true);
     setMessage(null);
+
+    if (isForgotPasswordMode) {
+      if (!email) {
+        setMessage({ type: 'error', text: 'Email is required' });
+        setLoading(false);
+        return;
+      }
+      
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin
+      });
+      
+      if (error) {
+        setMessage({ type: 'error', text: error.message });
+      } else {
+        setMessage({ type: 'success', text: 'Password reset link sent to your email.' });
+      }
+      setLoading(false);
+      return;
+    }
 
     if (!email || !password) {
       setMessage({ type: 'error', text: 'Email and password are required' });
@@ -523,7 +607,6 @@ function Login() {
       if (!isLoginMode && data?.user && !data?.session) {
         setMessage({ type: 'success', text: 'Account created! Please check your email to confirm.' });
       }
-      // If it successfully created a session, Supabase's global onAuthStateChange catches it and updates <App /> automatically.
     }
     setLoading(false);
   };
@@ -560,20 +643,22 @@ function Login() {
               </div>
             </div>
             
-            <div className="space-y-1">
-              <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Password</label>
-              <div className="relative">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
-                <input
-                  type="password"
-                  required
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-ink"
-                />
+            {!isForgotPasswordMode && (
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Password</label>
+                <div className="relative">
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
+                  <input
+                    type="password"
+                    required
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-ink"
+                  />
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           <button
@@ -581,7 +666,7 @@ function Login() {
             disabled={loading}
             className="w-full bg-ink text-white py-4 rounded-2xl font-bold text-[14px] uppercase tracking-[0.1em] hover:bg-black transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            {loading ? <Loader2 className="animate-spin" size={20} /> : (isLoginMode ? 'Sign In' : 'Create Account')}
+            {loading ? <Loader2 className="animate-spin" size={20} /> : (isForgotPasswordMode ? 'Send Reset Link' : (isLoginMode ? 'Sign In' : 'Create Account'))}
           </button>
         </form>
 
@@ -598,18 +683,36 @@ function Login() {
           </motion.div>
         )}
 
-        <div className="pt-4 border-t border-border flex flex-col items-center gap-4">
+        <div className="pt-4 border-t border-border flex flex-col items-center gap-3">
+          {!isForgotPasswordMode && (
+             <button
+               type="button"
+               onClick={() => {
+                 setIsForgotPasswordMode(true);
+                 setMessage(null);
+               }}
+               className="text-[12px] font-bold text-subtle hover:text-ink transition-colors"
+             >
+               Forgot password?
+             </button>
+          )}
+
           <button
             type="button"
             onClick={() => {
-              setIsLoginMode(!isLoginMode);
+              if (isForgotPasswordMode) {
+                setIsForgotPasswordMode(false);
+              } else {
+                setIsLoginMode(!isLoginMode);
+              }
               setMessage(null);
             }}
             className="text-[12px] font-bold text-subtle hover:text-ink transition-colors"
           >
-            {isLoginMode ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+            {isForgotPasswordMode 
+              ? "Back to Sign In" 
+              : (isLoginMode ? "Don't have an account? Sign up" : "Already have an account? Sign in")}
           </button>
-          <p className="text-[10px] text-subtle/50 uppercase tracking-widest font-bold">Powered by Supabase</p>
         </div>
       </motion.div>
     </div>
