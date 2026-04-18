@@ -217,9 +217,7 @@ export default function App() {
   }, [meals]);
 
   useEffect(() => {
-    if (sortedMeals.length > 0 && (!selectedMealId || !sortedMeals.some(m => String(m.id) === selectedMealId))) {
-      setSelectedMealId(String(sortedMeals[0].id));
-    } else if (sortedMeals.length === 0) {
+    if (selectedMealId && !sortedMeals.some(m => String(m.id) === selectedMealId)) {
       setSelectedMealId(null);
     }
   }, [sortedMeals, selectedMealId]);
@@ -508,7 +506,7 @@ export default function App() {
                           meal={meal}
                           foods={foods}
                           isSelected={String(meal.id) === selectedMealId}
-                          onClick={() => setSelectedMealId(String(meal.id))}
+                          onClick={() => setSelectedMealId(sel => sel === String(meal.id) ? null : String(meal.id))}
                           onEdit={() => {
                             setEditingMeal(meal);
                             setIsMealModalOpen(true);
