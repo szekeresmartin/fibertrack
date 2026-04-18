@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Plus,
@@ -11,7 +11,9 @@ import {
   Database,
   Clock,
   ChevronRight,
+  ChevronLeft,
   Trash2,
+  Edit2,
   Search,
   X,
   Save,
@@ -23,7 +25,7 @@ import {
 } from 'lucide-react';
 import { Food, Meal, DailyTotals, MealItem } from './types';
 import { fetchFoodsFromSheets } from './lib/googleSheets';
-import { cn, calculateMealTotals } from './lib/utils';
+import { cn, calculateMealTotals, getFriendlyErrorMessage } from './lib/utils';
 import { format } from 'date-fns';
 import { supabase } from './lib/supabase';
 import { User } from '@supabase/supabase-js';
@@ -33,7 +35,8 @@ import { User } from '@supabase/supabase-js';
 const getFoodOrUnknown = (foods: Food[], id: string): Food => {
   return foods.find(f => f.id === id) || {
     id,
-    name: 'Unknown / Deleted Food',
+    name_hu: 'Unknown / Deleted Food',
+    name_en: '',
     calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0,
     source: 'local',
     isDeleted: true
@@ -54,6 +57,18 @@ export default function App() {
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isRecoveryMode, setIsRecoveryMode] = useState(false);
+  const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [toastMessage, setToastMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
+
+  const showToast = (text: string, type: 'success' | 'error') => {
+    setToastMessage({ text, type });
+    if (type === 'success') {
+      setTimeout(() => setToastMessage(null), 3000);
+    } else {
+      setTimeout(() => setToastMessage(null), 5000);
+    }
+  };
 
   // --------------------------------------
   // Root-level Auth Handler
@@ -82,6 +97,12 @@ export default function App() {
     if (!user) return;
 
     const fetchMeals = async () => {
+      const startOfDay = new Date(selectedDate);
+      startOfDay.setHours(0, 0, 0, 0);
+
+      const endOfDay = new Date(selectedDate);
+      endOfDay.setHours(23, 59, 59, 999);
+
       const { data, error } = await supabase
         .from('meals')
         .select(`
@@ -91,7 +112,9 @@ export default function App() {
             grams
           )
         `)
-        .eq('user_id', user.id);
+        .eq('user_id', user.id)
+        .gte('created_at', startOfDay.toISOString())
+        .lte('created_at', endOfDay.toISOString());
 
       if (error) {
         console.error('Error fetching meals:', error);
@@ -110,7 +133,7 @@ export default function App() {
     };
 
     fetchMeals();
-  }, [user]);
+  }, [user, selectedDate]);
 
   // Load foods
   useEffect(() => {
@@ -142,8 +165,10 @@ export default function App() {
 
       // Combine with local foods
       localFoods.forEach(local => {
-        if (!combinedFoods.find(f => f.name === local.name)) {
-          combinedFoods.push(local);
+        if (local.source === 'local') {
+          if (!combinedFoods.find(f => f.name_hu === local.name_hu)) {
+            combinedFoods.push(local);
+          }
         }
       });
 
@@ -191,10 +216,19 @@ export default function App() {
     return [...meals].sort((a, b) => a.time.localeCompare(b.time));
   }, [meals]);
 
+  useEffect(() => {
+    if (sortedMeals.length > 0 && (!selectedMealId || !sortedMeals.some(m => String(m.id) === selectedMealId))) {
+      setSelectedMealId(String(sortedMeals[0].id));
+    } else if (sortedMeals.length === 0) {
+      setSelectedMealId(null);
+    }
+  }, [sortedMeals, selectedMealId]);
+
+  const selectedMeal = useMemo(() => sortedMeals.find(m => String(m.id) === selectedMealId) || null, [sortedMeals, selectedMealId]);
+
   const handleSaveMeal = async (meal: Partial<Meal>) => {
     if (!user) throw new Error("User not authenticated.");
 
-    // Manually strictly construct payload to avoid bad columns
     const mealPayload: any = {
       name: meal.name,
       time: meal.time,
@@ -203,6 +237,11 @@ export default function App() {
 
     if (meal.id) {
       mealPayload.id = meal.id;
+    } else {
+      const mealDate = new Date(selectedDate);
+      const [hours, minutes] = meal.time.split(':');
+      mealDate.setHours(Number(hours), Number(minutes), 0, 0);
+      mealPayload.created_at = mealDate.toISOString();
     }
 
     const { data: insertedMeal, error } = await supabase
@@ -213,7 +252,8 @@ export default function App() {
 
     if (error) {
       console.error('Error saving meal:', error);
-      throw new Error(error.message || 'Failed to save meal info.');
+      showToast(getFriendlyErrorMessage(error), 'error');
+      throw new Error(getFriendlyErrorMessage(error));
     }
 
     if (meal.items && meal.items.length > 0) {
@@ -230,7 +270,12 @@ export default function App() {
       const { error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert);
       if (itemsError) {
         console.error('Error saving meal items:', itemsError);
-        throw new Error(itemsError.message || 'Failed to save meal items.');
+        // Transaction safety: rollback the freshly inserted meal to prevent partial UI/DB state
+        if (!meal.id) {
+          await supabase.from('meals').delete().eq('id', insertedMeal.id);
+        }
+        showToast(getFriendlyErrorMessage(itemsError), 'error');
+        throw new Error(getFriendlyErrorMessage(itemsError));
       }
     }
 
@@ -241,8 +286,10 @@ export default function App() {
     } else {
       setMeals([...meals, completeMeal]);
     }
+    
     setIsMealModalOpen(false);
     setEditingMeal(null);
+    showToast('Meal saved successfully!', 'success');
   };
 
   const handleDeleteMeal = async (id: string) => {
@@ -283,10 +330,41 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-bg text-ink font-sans flex flex-col">
-      {/* Header */}
-      <header className="sticky top-0 z-10 bg-card border-b border-border px-6 py-10 sm:px-16 flex flex-col sm:flex-row justify-between items-start sm:items-end gap-6">
-        <div className="title-group">
-          <h1 className="text-[14px] uppercase tracking-[0.1em] text-subtle font-bold mb-2">Fiber Intake Today</h1>
+      {/* Desktop Header — hidden on mobile (mobile uses compact sticky header below) */}
+      <header className="hidden lg:flex sticky top-0 z-10 bg-card border-b border-border px-6 py-6 sm:px-16 flex-col sm:flex-row justify-between items-start sm:items-end gap-6">
+        <div className="title-group w-full sm:w-auto">
+          {/* Date Navigator */}
+          <div className="flex items-center gap-3 mb-6">
+            <button
+              onClick={() => {
+                const prev = new Date(selectedDate);
+                prev.setDate(prev.getDate() - 1);
+                setSelectedDate(prev);
+              }}
+              className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors active:scale-95"
+            >
+              <ChevronLeft size={20} className="text-subtle" />
+            </button>
+            <span className="text-[14px] font-[800] uppercase tracking-widest text-ink select-none min-w-[140px] text-center">
+              {selectedDate.toDateString() === new Date().toDateString() 
+                ? "Today" 
+                : format(selectedDate, 'MMM d, yyyy')}
+            </span>
+            <button
+              onClick={() => {
+                const next = new Date(selectedDate);
+                next.setDate(next.getDate() + 1);
+                setSelectedDate(next);
+              }}
+              className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors active:scale-95"
+            >
+              <ChevronRight size={20} className="text-subtle" />
+            </button>
+          </div>
+
+          <h1 className="text-[14px] uppercase tracking-[0.1em] text-subtle font-bold mb-2">
+            Fiber Intake {selectedDate.toDateString() === new Date().toDateString() ? 'Today' : ''}
+          </h1>
           <div className="text-[84px] font-[800] leading-[0.9] tracking-[-3px]">
             {dailyTotals.total_fiber.toFixed(1)}
             <span className="text-subtle text-[40px] tracking-[-1px] ml-2">/ 35g</span>
@@ -318,23 +396,100 @@ export default function App() {
         </div>
       </header>
 
+      {/* Mobile header: compact date nav + fiber progress bar */}
+      <div className="lg:hidden sticky top-0 z-10 bg-card border-b border-border">
+        {/* Date navigator */}
+        <div className="flex items-center justify-between px-5 pt-4 pb-2">
+          <button
+            onClick={() => { const d = new Date(selectedDate); d.setDate(d.getDate()-1); setSelectedDate(d); }}
+            className="p-2 hover:bg-gray-100 rounded-full active:scale-90 transition-all"
+          >
+            <ChevronLeft size={20} className="text-subtle" />
+          </button>
+          <div className="text-center">
+            <div className="text-[15px] font-[800] tracking-tight text-ink">
+              {selectedDate.toDateString() === new Date().toDateString() ? 'Today' : format(selectedDate, 'MMM d, yyyy')}
+            </div>
+            <div className="text-[11px] text-subtle uppercase tracking-widest font-bold mt-0.5">Fiber Intake</div>
+          </div>
+          <button
+            onClick={() => { const d = new Date(selectedDate); d.setDate(d.getDate()+1); setSelectedDate(d); }}
+            className="p-2 hover:bg-gray-100 rounded-full active:scale-90 transition-all"
+          >
+            <ChevronRight size={20} className="text-subtle" />
+          </button>
+        </div>
+        {/* Fiber progress row */}
+        <div className="px-5 pb-4">
+          <div className="flex items-end justify-between mb-1.5">
+            <span className="text-[30px] font-[800] tracking-tight text-ink leading-none">{dailyTotals.total_fiber.toFixed(1)}<span className="text-[16px] text-subtle font-semibold ml-1">/ 35g</span></span>
+            <span className="text-[11px] font-bold text-subtle uppercase tracking-widest">{Math.round(Math.min(dailyTotals.total_fiber / 35 * 100, 100))}%</span>
+          </div>
+          <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-accent rounded-full transition-all duration-500"
+              style={{ width: `${Math.min(dailyTotals.total_fiber / 35 * 100, 100)}%` }}
+            />
+          </div>
+          <div className="flex justify-between mt-2 text-[10px] text-subtle/60 font-semibold uppercase tracking-widest">
+            <span>{Math.round(dailyTotals.calories)} kcal</span>
+            <span>{Math.round(dailyTotals.protein)}g protein</span>
+            <span>{Math.round(dailyTotals.fat)}g fat</span>
+          </div>
+        </div>
+      </div>
+
       <main className={cn(
         "flex-1 overflow-hidden",
-        view === 'timeline' ? "grid grid-cols-1 lg:grid-cols-[1fr_360px]" : "max-w-4xl mx-auto w-full p-6"
+        view === 'timeline' ? "lg:grid lg:grid-cols-[1fr_360px]" : "max-w-4xl mx-auto w-full p-6"
       )}>
         {view === 'timeline' ? (
           <>
-            {/* Timeline Container */}
-            <div className="p-10 sm:p-16 border-r border-border bg-bg overflow-y-auto">
+            {/* === MOBILE: Card list layout === */}
+            <div className="lg:hidden overflow-y-auto bg-bg">
+              {isLoading ? (
+                <div className="flex items-center justify-center h-48">
+                  <Loader2 className="animate-spin text-accent" size={32} />
+                </div>
+              ) : sortedMeals.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-64 text-subtle">
+                  <Clock size={44} className="mb-4 opacity-20" />
+                  <p className="italic text-sm">No meals for this day</p>
+                  <button
+                    onClick={() => setIsMealModalOpen(true)}
+                    className="mt-4 px-6 py-2.5 bg-accent/10 text-accent rounded-full font-bold text-[12px] uppercase tracking-widest hover:bg-accent/20 active:scale-95 transition-all"
+                  >
+                    Log a meal
+                  </button>
+                </div>
+              ) : (
+                <div className="px-4 pt-4 pb-28 flex flex-col gap-3">
+                  {sortedMeals.map(meal => (
+                    <MealCard
+                      key={meal.id}
+                      meal={meal}
+                      foods={foods}
+                      isSelected={String(meal.id) === selectedMealId}
+                      onClick={() => setSelectedMealId(sel => sel === String(meal.id) ? null : String(meal.id))}
+                      onEdit={() => { setEditingMeal(meal); setIsMealModalOpen(true); }}
+                      onDelete={() => handleDeleteMeal(String(meal.id))}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* === DESKTOP: Absolute timeline === */}
+            <div className="hidden lg:block p-10 sm:p-16 border-r border-border bg-bg overflow-y-auto">
               {meals.length === 0 && !isLoading && (
                 <div className="flex flex-col items-center justify-center h-64 text-subtle italic">
                   <Clock size={48} className="mb-4 opacity-20" />
-                  <p>No meals tracked yet for today.</p>
+                  <p>No meals tracked for this day.</p>
                   <button
                     onClick={() => setIsMealModalOpen(true)}
                     className="mt-4 text-accent font-bold uppercase tracking-widest text-[12px] hover:underline"
                   >
-                    Log your first meal
+                    Log a meal
                   </button>
                 </div>
               )}
@@ -352,6 +507,8 @@ export default function App() {
                           key={meal.id}
                           meal={meal}
                           foods={foods}
+                          isSelected={String(meal.id) === selectedMealId}
+                          onClick={() => setSelectedMealId(String(meal.id))}
                           onEdit={() => {
                             setEditingMeal(meal);
                             setIsMealModalOpen(true);
@@ -365,65 +522,80 @@ export default function App() {
               </div>
             </div>
 
-            {/* Detail Panel / Sidebar */}
+            {/* Detail Panel / Sidebar (desktop only) */}
             <aside className="hidden lg:flex flex-col bg-card p-10 gap-8 overflow-y-auto border-l border-border">
               <div className="detail-header">
                 <h2 className="text-[24px] font-[800] tracking-[-0.5px]">Meal Details</h2>
                 <p className="text-subtle text-[13px] mt-1">Select a meal to see breakdown</p>
               </div>
 
-              {sortedMeals.length > 0 ? (
-                <div className="space-y-8">
-                  {/* Show first meal as detail by default, or could be selection state */}
-                  {sortedMeals.slice(0, 1).map(meal => {
-                    const mealItems = (meal.items || []).map(item => ({
-                      food: getFoodOrUnknown(foods, item.foodId),
-                      quantity: item.quantityGrams
-                    }));
-                    const totals = calculateMealTotals(mealItems);
+              {selectedMeal ? (() => {
+                const meal = selectedMeal;
+                const mealItems = (meal.items || []).map(item => ({
+                  food: getFoodOrUnknown(foods, item.foodId),
+                  quantity: item.quantityGrams
+                }));
+                const totals = calculateMealTotals(mealItems);
 
-                    return (
-                      <div key={meal.id} className="space-y-6">
-                        <div className="bg-gray-50 p-4 rounded-xl border border-border">
-                          <h3 className="font-bold text-lg">{meal.name}</h3>
-                          <p className="text-xs text-subtle">{meal.time}</p>
-                        </div>
+                return (
+                  <div className="space-y-8">
+                    <div className="bg-gray-50 p-4 rounded-xl border border-border">
+                      <h3 className="font-bold text-lg">{meal.name}</h3>
+                      <p className="text-xs text-subtle">{meal.time}</p>
+                    </div>
 
-                        <ul className="space-y-0">
-                          {mealItems.map((item, i) => (
-                            <li key={i} className="flex justify-between items-center py-3 border-b border-border last:border-0">
-                              <div className="food-info">
-                                <h4 className={cn("text-[14px]", !item.food.isDeleted ? "font-semibold" : "text-red-500 italic")}>{item.food.name}</h4>
-                                <p className="text-[12px] text-subtle">{item.quantity}g</p>
-                              </div>
-                              <div className="font-mono font-bold text-[14px]">
-                                {(item.food.total_fiber * item.quantity / 100).toFixed(1)}g
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
+                    <div className="grid grid-cols-2 gap-4">
+                      <StatCard small label="Calories" value={Math.round(totals.calories).toLocaleString()} unit="" />
+                      <StatCard small label="Protein" value={Math.round(totals.protein)} unit="g" />
+                      <StatCard small label="Carbs" value={Math.round(totals.carbs)} unit="g" />
+                      <StatCard small label="Fat" value={Math.round(totals.fat)} unit="g" />
+                    </div>
 
-                        <div className="bg-[#F1F5F9] p-4 rounded-xl space-y-2">
-                          <div className="flex justify-between text-[13px]">
-                            <span className="text-[#64748B]">Soluble Fiber</span>
-                            <span className="font-semibold">{totals.soluble_fiber.toFixed(1)}g</span>
+                    <div className="bg-[#F1F5F9] p-4 rounded-xl space-y-2">
+                       <div className="flex justify-between text-[13px]">
+                         <span className="text-[#64748B]">Soluble Fiber</span>
+                         <span className="font-semibold">{totals.soluble_fiber.toFixed(1)}g</span>
+                       </div>
+                       <div className="flex justify-between text-[13px]">
+                         <span className="text-[#64748B]">Insoluble Fiber</span>
+                         <span className="font-semibold">{totals.insoluble_fiber.toFixed(1)}g</span>
+                       </div>
+                       <div className="flex justify-between text-[13px] border-t border-[#CBD5E1] pt-2 mt-1">
+                         <span className="font-bold text-ink">Total Fiber</span>
+                         <span className="font-bold text-accent">{totals.total_fiber.toFixed(1)}g</span>
+                       </div>
+                    </div>
+
+                    <ul className="space-y-0">
+                      {mealItems.map((item, i) => (
+                        <li key={i} className="flex justify-between items-center py-3 border-b border-border last:border-0">
+                          <div className="flex-1 min-w-0 pr-4">
+                            <h4 className={cn("text-[14px]", !item.food.isDeleted ? "font-semibold" : "text-red-500 italic")}>
+                              {item.food.name_hu}
+                              {item.food.name_en && <span className="text-xs text-gray-500 ml-1 font-normal opacity-80">({item.food.name_en})</span>}
+                            </h4>
+                            <div className="text-[13px] text-gray-500 mt-0.5">{item.quantity}g</div>
                           </div>
-                          <div className="flex justify-between text-[13px]">
-                            <span className="text-[#64748B]">Insoluble Fiber</span>
-                            <span className="font-semibold">{totals.insoluble_fiber.toFixed(1)}g</span>
+                          <div className="font-mono font-bold text-[14px]">
+                            {(item.food.total_fiber * item.quantity / 100).toFixed(1)}g
                           </div>
-                          <div className="flex justify-between text-[13px] border-t border-[#CBD5E1] pt-2 mt-1">
-                            <span className="font-bold text-ink">Total Fiber</span>
-                            <span className="font-bold text-accent">{totals.total_fiber.toFixed(1)}g</span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="flex-1 flex items-center justify-center text-subtle text-sm italic">
-                  No meals logged today
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })() : (
+                <div className="flex-1 flex flex-col items-center justify-center text-subtle text-sm h-64">
+                  <Clock size={40} className="mb-3 opacity-20" />
+                  <span className="italic">{sortedMeals.length > 0 ? "Select a meal on the timeline" : "No meals logged today"}</span>
+                  {sortedMeals.length === 0 && (
+                     <button
+                       onClick={() => { setEditingMeal(null); setIsMealModalOpen(true); }}
+                       className="mt-4 px-6 py-2 bg-black/5 hover:bg-black/10 rounded-full font-semibold transition-colors uppercase tracking-widest text-[10px]"
+                     >
+                       Create First Meal
+                     </button>
+                  )}
                 </div>
               )}
 
@@ -465,6 +637,22 @@ export default function App() {
         </button>
       )}
 
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200]"
+          >
+            <div className={cn("px-4 py-3 rounded-full shadow-xl text-sm font-bold flex items-center gap-2", toastMessage.type === 'success' ? "bg-[#DCFCE7] text-[#166534]" : "bg-red-100 text-red-700")}>
+              {toastMessage.text}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Modals */}
       <AnimatePresence>
         {isMealModalOpen && (
@@ -497,7 +685,7 @@ function UpdatePassword({ onComplete }: { onComplete: () => void }) {
     const { error } = await supabase.auth.updateUser({ password });
 
     if (error) {
-      setMessage({ type: 'error', text: error.message });
+      setMessage({ type: 'error', text: getFriendlyErrorMessage(error) });
       setLoading(false);
     } else {
       setMessage({ type: 'success', text: 'Password successfully updated!' });
@@ -566,7 +754,7 @@ function Login() {
       });
       
       if (error) {
-        setMessage({ type: 'error', text: error.message });
+        setMessage({ type: 'error', text: getFriendlyErrorMessage(error) });
       } else {
         setMessage({ type: 'success', text: 'Password reset link sent to your email.' });
       }
@@ -602,7 +790,7 @@ function Login() {
     }
 
     if (error) {
-      setMessage({ type: 'error', text: error.message });
+      setMessage({ type: 'error', text: getFriendlyErrorMessage(error) });
     } else {
       if (!isLoginMode && data?.user && !data?.session) {
         setMessage({ type: 'success', text: 'Account created! Please check your email to confirm.' });
@@ -729,22 +917,163 @@ interface StatCardProps {
 
 function StatCard({ label, value, unit, highlight = false, small = false }: StatCardProps) {
   return (
-    <div className="flex flex-col">
-      <span className="text-[24px] font-[700] tracking-[-0.5px]">{value}{unit}</span>
-      <span className="text-[11px] uppercase text-subtle font-semibold mt-1 tracking-wider">{label}</span>
+    <div className={cn("flex flex-col", highlight && "text-accent")}>
+      <span className={cn(
+        "font-[800] tracking-tight text-ink", 
+        small ? "text-[20px]" : "text-[28px]"
+      )}>
+        {value}<span className={cn("font-semibold text-subtle ml-[2px]", small ? "text-[13px]" : "text-[16px]")}>{unit}</span>
+      </span>
+      <span className="text-[10px] uppercase text-subtle/70 font-bold tracking-widest">{label}</span>
     </div>
   );
 }
 
-interface MealBlockProps {
-  key?: string | number;
+// ─── Mobile expandable card ───────────────────────────────────────────────────
+interface MealCardProps {
   meal: Meal;
   foods: Food[];
+  isSelected: boolean;
+  onClick: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }
 
-function MealBlock({ meal, foods, onEdit, onDelete }: MealBlockProps) {
+function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealCardProps) {
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const [mealH, mealM] = meal.time.split(':').map(Number);
+  const mealMinutes = mealH * 60 + mealM;
+  const isNow = Math.abs(nowMinutes - mealMinutes) < 30;
+
+  const mealItems = (meal.items || []).map(item => ({
+    food: getFoodOrUnknown(foods, item.foodId),
+    quantity: item.quantityGrams
+  }));
+  const totals = calculateMealTotals(mealItems);
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={cn(
+        'rounded-2xl border transition-all duration-200 overflow-hidden',
+        isSelected
+          ? 'border-accent bg-white shadow-lg ring-2 ring-accent/20'
+          : 'border-border bg-white shadow-sm hover:shadow-md active:scale-[0.99]'
+      )}
+    >
+      {/* Card header – always visible */}
+      <button
+        className="w-full text-left p-4"
+        onClick={onClick}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <div className="flex flex-col items-center">
+              <span className="text-[11px] font-bold text-accent uppercase tracking-widest">{meal.time}</span>
+              {isNow && (
+                <span className="text-[9px] font-bold bg-accent text-white px-1.5 py-0.5 rounded-full mt-0.5">Now</span>
+              )}
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-[16px] font-bold text-ink leading-tight truncate">{meal.name}</h3>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <span className="text-[11px] font-bold bg-[#DCFCE7] text-[#166534] px-2 py-0.5 rounded-full">{totals.total_fiber.toFixed(1)}g fiber</span>
+                <span className="text-[11px] text-subtle">{Math.round(totals.calories)} kcal</span>
+                <span className="text-[11px] text-subtle">{mealItems.length} item{mealItems.length !== 1 ? 's' : ''}</span>
+              </div>
+            </div>
+          </div>
+          <ChevronRight
+            size={18}
+            className={cn('text-subtle flex-shrink-0 transition-transform duration-200 mt-1', isSelected && 'rotate-90')}
+          />
+        </div>
+      </button>
+
+      {/* Expanded content */}
+      <AnimatePresence>
+        {isSelected && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-border px-4 pb-4 pt-3 space-y-4">
+              {/* Macros grid */}
+              <div className="grid grid-cols-4 gap-2 bg-gray-50 rounded-xl p-3">
+                {[
+                  { label: 'Protein', val: Math.round(totals.protein) + 'g' },
+                  { label: 'Carbs', val: Math.round(totals.carbs) + 'g' },
+                  { label: 'Fat', val: Math.round(totals.fat) + 'g' },
+                  { label: 'Fiber', val: totals.total_fiber.toFixed(1) + 'g' },
+                ].map(m => (
+                  <div key={m.label} className="text-center">
+                    <div className="text-[15px] font-[800] text-ink">{m.val}</div>
+                    <div className="text-[9px] text-subtle uppercase tracking-widest font-bold">{m.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Food list */}
+              <ul className="space-y-1">
+                {mealItems.map((item, i) => (
+                  <li key={i} className="flex justify-between items-center py-2 border-b border-gray-100 last:border-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={cn('text-[13px] font-semibold', item.food.isDeleted && 'text-red-400 italic')}>
+                        {item.food.name_hu}
+                        {item.food.name_en && (
+                          <span className="text-gray-500 font-normal ml-1 text-xs">({item.food.name_en})</span>
+                        )}
+                      </span>
+                      <span className="text-[11px] text-subtle ml-2">{item.quantity}g</span>
+                    </div>
+                    <span className="font-mono text-[12px] font-bold text-accent">
+                      {(item.food.total_fiber * item.quantity / 100).toFixed(1)}g
+                    </span>
+                  </li>
+                ))}
+              </ul>
+
+              {/* Actions */}
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={(e) => { e.stopPropagation(); onEdit(); }}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-gray-100 hover:bg-gray-200 rounded-xl text-[12px] font-bold transition-all active:scale-95"
+                >
+                  <Edit2 size={14} /> Edit
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onDelete(); }}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-red-50 hover:bg-red-100 text-red-500 rounded-xl text-[12px] font-bold transition-all active:scale-95"
+                >
+                  <Trash2 size={14} /> Delete
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
+// ─── Desktop timeline card ────────────────────────────────────────────────────
+interface MealBlockProps {
+  key?: string | number;
+  meal: Meal;
+  foods: Food[];
+  isSelected: boolean;
+  onClick: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}
+
+function MealBlock({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealBlockProps) {
   const mealItems = (meal.items || []).map(item => ({
     food: getFoodOrUnknown(foods, item.foodId),
     quantity: item.quantityGrams
@@ -756,8 +1085,13 @@ function MealBlock({ meal, foods, onEdit, onDelete }: MealBlockProps) {
     <motion.div
       initial={{ opacity: 0, x: 20 }}
       animate={{ opacity: 1, x: 0 }}
-      className="bg-card border border-border border-l-4 border-l-accent rounded-lg p-4 shadow-[0_2px_4px_rgba(0,0,0,0.02)] hover:shadow-md transition-all cursor-pointer group w-full max-w-md"
-      onClick={onEdit}
+      className={cn(
+        "bg-card border rounded-lg p-4 transition-all duration-200 cursor-pointer group w-full max-w-md",
+        isSelected
+          ? "border-accent ring-2 ring-accent/20 shadow-md bg-accent/5 scale-[1.02]"
+          : "border-border border-l-4 border-l-accent shadow-[0_2px_4px_rgba(0,0,0,0.02)] hover:shadow-md hover:bg-gray-50/80 hover:border-l-accent/80 hover:scale-[1.01] active:scale-[0.99]"
+      )}
+      onClick={onClick}
     >
       <div className="flex justify-between items-start">
         <div>
@@ -767,15 +1101,22 @@ function MealBlock({ meal, foods, onEdit, onDelete }: MealBlockProps) {
             {totals.total_fiber.toFixed(1)}g Fiber
           </div>
         </div>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          className="p-2 text-subtle hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-        >
-          <Trash2 size={16} />
-        </button>
+        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button
+            onClick={(e) => { e.stopPropagation(); onEdit(); }}
+            className="p-1.5 text-subtle hover:text-ink hover:bg-black/5 rounded-md transition-all active:scale-90"
+            title="Edit Meal"
+          >
+            <Edit2 size={16} />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="p-1.5 text-subtle hover:text-red-500 hover:bg-red-50 rounded-md transition-all active:scale-90"
+            title="Delete Meal"
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
       </div>
     </motion.div>
   );
@@ -797,6 +1138,15 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
   const [search, setSearch] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const quantityRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [onClose]);
 
   const handleSaveClick = async () => {
     setErrorMsg(null);
@@ -831,12 +1181,21 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
       return;
     }
     
+    // Strict parsing & merging duplicates
+    const finalItemsMap = new Map<string, number>();
+
     for (const item of items) {
-      if (item.quantityGrams === '' || !item.quantityGrams || Number(item.quantityGrams) <= 0) {
+      const qty = Number(item.quantityGrams);
+      if (isNaN(qty) || qty <= 0) {
         setErrorMsg("All foods must have a valid quantity greater than 0g.");
         return;
       }
+      finalItemsMap.set(item.foodId, (finalItemsMap.get(item.foodId) || 0) + qty);
     }
+
+    const mergedItems = Array.from(finalItemsMap.entries()).map(([foodId, quantityGrams]) => ({
+      foodId, quantityGrams
+    }));
 
     setIsSaving(true);
     try {
@@ -844,25 +1203,45 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
         ...(editingMeal ? { id: editingMeal.id } : {}),
         name: trimmedName,
         time,
-        items: items.map(item => ({ ...item, quantityGrams: Number(item.quantityGrams) }))
+        items: mergedItems
       } as Meal);
     } catch (err: any) {
-      setErrorMsg(err.message || 'An unexpected error occurred while saving.');
+      setErrorMsg(getFriendlyErrorMessage(err));
       setIsSaving(false);
     }
   };
 
+  // Food searching
   const filteredFoods = foods
-    .filter(f => (f.name || '').toLowerCase().includes(search.toLowerCase()))
-    .slice(0, 5);
+    .filter(f => (f.name_hu || '').toLowerCase().includes(search.toLowerCase()))
+    .slice(0, 50);
 
   console.log('SEARCH INPUT:', search);
   console.log('FILTERED FOODS:', filteredFoods);
   console.log('ALL FOODS IN MODAL:', foods.length);
 
   const addItem = (food: Food) => {
-    setItems([...items, { foodId: food.id, quantityGrams: 100 }]);
+    setItems(prev => {
+      const newItems = [...prev, { foodId: food.id, quantityGrams: 100 }];
+      const idx = newItems.length - 1;
+      setTimeout(() => {
+        if (quantityRefs.current[idx]) {
+          quantityRefs.current[idx]?.focus();
+          quantityRefs.current[idx]?.select();
+        }
+      }, 50);
+      return newItems;
+    });
     setSearch('');
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (search && filteredFoods.length > 0) {
+        addItem(filteredFoods[0]);
+      }
+    }
   };
 
   const removeItem = (index: number) => {
@@ -894,14 +1273,15 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
         initial={{ y: '100%' }}
         animate={{ y: 0 }}
         exit={{ y: '100%' }}
-        className="relative w-full max-w-lg bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+        className="relative w-full max-w-lg bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto overflow-x-hidden"
       >
-        <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+        <form onSubmit={(e) => { e.preventDefault(); handleSaveClick(); }} className="flex flex-col min-h-0 w-full">
+        <div className="p-6 border-b border-gray-100 flex items-center justify-between sticky top-0 bg-white z-[120]">
           <h2 className="text-xl font-bold">{editingMeal ? 'Edit Meal' : 'New Meal'}</h2>
-          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full"><X size={20} /></button>
+          <button type="button" onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full"><X size={20} /></button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        <div className="flex-1 overflow-visible p-6 space-y-6">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Meal Name</label>
@@ -927,29 +1307,37 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
           <div className="space-y-4">
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Add Foods</label>
-              <div className="relative z-50">
+              <div className="relative z-[130]">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
                 <input
                   type="text"
+                  autoFocus
                   value={search}
                   onChange={e => setSearch(e.target.value)}
+                  onKeyDown={handleSearchKeyDown}
                   placeholder="Search database..."
                   className="w-full pl-12 pr-4 py-3 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500 transition-all"
                 />
                 {search && (
-                  <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.15)] border border-gray-100 z-[100] max-h-60 overflow-y-auto">
+                  <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-[0_15px_60px_-15px_rgba(0,0,0,0.3)] border border-gray-100 z-[140] max-h-[300px] overflow-y-auto">
                     {filteredFoods.map(food => (
                       <button
+                        type="button"
                         key={food.id}
                         onClick={() => addItem(food)}
-                        className="w-full px-4 py-3 text-left hover:bg-green-50 flex justify-between items-center transition-colors"
+                        className="w-full px-4 py-3 text-left hover:bg-green-50 focus:bg-green-50 flex justify-between items-center transition-all active:scale-[0.98]"
                       >
-                        <span className="font-medium">{food.name}</span>
-                        <span className="text-xs text-gray-400">{food.total_fiber}g fiber / 100g</span>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-medium text-sm text-ink">{food.name_hu}</span>
+                        </div>
+                        <span className="text-xs font-semibold text-gray-400 bg-gray-100 px-2 py-0.5 rounded">{food.total_fiber}g <span className="font-normal opacity-70">/ 100g</span></span>
                       </button>
                     ))}
                     {filteredFoods.length === 0 && (
-                      <div className="px-4 py-3 text-gray-400 text-sm">No foods found</div>
+                      <div className="px-5 py-6 text-center text-gray-400 text-sm italic w-full">
+                         <div className="inline-block p-3 outline-1 outline-dashed outline-gray-200 rounded-full mb-3 opacity-50"><Search size={20} /></div>
+                         <p>No matching foods found</p>
+                      </div>
                     )}
                   </div>
                 )}
@@ -960,24 +1348,31 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
               {items.map((item, i) => {
                 const food = getFoodOrUnknown(foods, item.foodId);
                 return (
-                  <div key={i} className="flex items-center gap-3 bg-gray-50 p-3 rounded-xl">
-                    <div className="flex-1">
-                      <div className={cn("font-medium text-sm", food.isDeleted && 'text-red-500 italic')}>{food.name}</div>
-                      <div className="text-[10px] text-gray-400 uppercase tracking-wider">
-                        {(food.total_fiber * Number(item.quantityGrams) / 100).toFixed(1)}g Fiber
+                  <div key={i} className="flex items-center gap-3 bg-gray-50/80 p-3 rounded-xl border border-transparent hover:border-gray-200 hover:shadow-sm hover:bg-white transition-all group">
+                    <div>
+                      <div className={cn("font-medium text-sm text-ink", food.isDeleted && 'text-red-500 italic')}>
+                        {food.name_hu}
+                        {food.name_en && <span className="text-xs text-gray-500 ml-1 font-normal">({food.name_en})</span>}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-0.5">{food.calories} kcal / 100g</div>
+                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">
+                        <span className="text-green-600">{(food.total_fiber * Number(item.quantityGrams) / 100).toFixed(1)}g</span> Fiber
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        value={item.quantityGrams}
-                        onFocus={(e) => { e.target.value = ''; updateQuantity(i, ''); }}
-                        onClick={(e) => { e.target.value = ''; updateQuantity(i, ''); }}
-                        onChange={e => updateQuantity(i, e.target.value === '' ? '' : Number(e.target.value))}
-                        className="w-20 px-2 py-1 bg-white border border-gray-200 rounded-lg text-sm text-center"
-                      />
-                      <span className="text-xs text-gray-400">g</span>
-                      <button onClick={() => removeItem(i)} className="p-1 text-gray-300 hover:text-red-500"><X size={16} /></button>
+                      <div className="relative group-hover:scale-105 transition-transform">
+                        <input
+                          type="number"
+                          ref={(el) => { quantityRefs.current[i] = el; }}
+                          value={item.quantityGrams}
+                          onFocus={(e) => { e.target.value = ''; updateQuantity(i, ''); }}
+                          onClick={(e) => { e.target.value = ''; updateQuantity(i, ''); }}
+                          onChange={e => updateQuantity(i, e.target.value === '' ? '' : Number(e.target.value))}
+                          className="w-20 px-2 pl-4 py-1.5 bg-white border border-gray-200 rounded-lg text-sm text-left focus:ring-2 focus:border-green-500 focus:outline-none transition-all shadow-inner"
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400 pointer-events-none">g</span>
+                      </div>
+                      <button type="button" onClick={() => removeItem(i)} className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-all active:scale-90"><X size={16} /></button>
                     </div>
                   </div>
                 );
@@ -986,11 +1381,11 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
           </div>
         </div>
 
-        <div className="p-6 bg-gray-50 border-t border-gray-100 flex flex-col gap-4">
+        <div className="p-6 bg-gray-50 border-t border-gray-100 flex flex-col gap-4 sticky bottom-0 z-[110]">
           {errorMsg && (
             <div className="bg-red-50 text-red-700 p-3 rounded-xl text-sm border border-red-100 flex items-center justify-between">
               <span>{errorMsg}</span>
-              <button onClick={() => setErrorMsg(null)} className="p-1 hover:bg-red-100 rounded-full text-red-400 hover:text-red-600 transition-colors">
+              <button type="button" onClick={() => setErrorMsg(null)} className="p-1 hover:bg-red-100 rounded-full text-red-400 hover:text-red-600 transition-colors">
                 <X size={16} />
               </button>
             </div>
@@ -1007,7 +1402,7 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
               </div>
             </div>
             <button
-              onClick={handleSaveClick}
+              type="submit"
               disabled={isSaving}
               className="px-8 py-3 bg-green-600 text-white rounded-xl font-bold shadow-lg shadow-green-200 hover:bg-green-700 disabled:opacity-50 disabled:shadow-none transition-all active:scale-95 flex items-center gap-2"
             >
@@ -1015,6 +1410,7 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
             </button>
           </div>
         </div>
+        </form>
       </motion.div>
     </div>
   );
@@ -1031,11 +1427,11 @@ interface FoodDatabaseProps {
 function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: FoodDatabaseProps) {
   const [search, setSearch] = useState('');
   const [isAdding, setIsAdding] = useState(false);
-  const [newFood, setNewFood] = useState<Partial<Food>>({
-    name: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0
+  const [newFood, setNewFood] = useState<Omit<Food, 'id' | 'source'>>({
+    name_hu: '', name_en: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0
   });
 
-  const filteredFoods = foods.filter(f => f.name.toLowerCase().includes(search.toLowerCase()));
+  const filteredFoods = foods.filter(f => (f.name_hu || '').toLowerCase().includes(search.toLowerCase()));
 
   const handleAddFood = () => {
     const food: Food = {
@@ -1051,7 +1447,7 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
     localStorage.setItem('fiber_track_local_foods', JSON.stringify(local));
 
     setIsAdding(false);
-    setNewFood({ name: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0 });
+    setNewFood({ name_hu: '', name_en: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0 });
   };
 
   const handleDeleteFood = (id: string) => {
@@ -1127,8 +1523,11 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
               {isLoading ? (
                 <tr><td colSpan={5} className="py-8 text-center text-gray-400">Loading foods...</td></tr>
               ) : filteredFoods.map(food => (
-                <tr key={food.id} className="group">
-                  <td className="py-4 font-medium">{food.name}</td>
+                <tr key={food.id} className="border-b transition-colors hover:bg-gray-50/50 group">
+                  <td className="py-4 font-medium">
+                    {food.name_hu}
+                    {food.name_en && <span className="block text-xs text-gray-500 mt-1 font-normal opacity-70">({food.name_en})</span>}
+                  </td>
                   <td className="py-4 text-right font-bold text-green-600">{food.total_fiber}g</td>
                   <td className="py-4 text-right text-gray-500">{food.calories}</td>
                   <td className="py-4 text-right">
@@ -1162,7 +1561,8 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
               <div className="space-y-4">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Name</label>
-                  <input type="text" value={newFood.name} onChange={e => setNewFood({ ...newFood, name: e.target.value })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500" />
+                  <input type="text" placeholder="Név (HU)" value={newFood.name_hu} onChange={e => setNewFood({ ...newFood, name_hu: e.target.value })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500 mb-2" />
+                  <input type="text" placeholder="Name (EN) - Opcionális" value={newFood.name_en} onChange={e => setNewFood({ ...newFood, name_en: e.target.value })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500" />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1">

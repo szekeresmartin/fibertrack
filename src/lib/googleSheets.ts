@@ -18,7 +18,8 @@ export async function fetchFoodsFromSheets(url: string = DEFAULT_SHEET_URL): Pro
         complete: (results) => {
           const foods: Food[] = results.data.map((row: any, index: number) => ({
             id: `sheet-${index}`,
-            name: row.name || 'Unknown Food',
+            name_hu: row.name || 'Unknown Food',
+            name_en: '',
             calories: Number(row.calories) || 0,
             carbs: Number(row.carbs) || 0,
             protein: Number(row.protein) || 0,

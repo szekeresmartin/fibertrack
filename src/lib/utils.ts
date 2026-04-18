@@ -10,6 +10,27 @@ export function formatTime(time: string) {
   return time; // Simple for now, assuming HH:mm
 }
 
+export function getFriendlyErrorMessage(err: unknown): string {
+  if (!err) return 'Something went wrong. Please try again.';
+  
+  const msg = err instanceof Error ? err.message : 
+              (typeof err === 'object' && err !== null && 'message' in err) ? String((err as any).message) : 
+              String(err);
+              
+  const lowerMsg = msg.toLowerCase();
+  
+  if (lowerMsg.includes('failed to fetch') || lowerMsg.includes('network error') || lowerMsg.includes('offline')) {
+    return 'No internet connection. Please try again.';
+  }
+  
+  if (lowerMsg.includes('invalid login credentials')) {
+    return 'Invalid email or password. Please try again.';
+  }
+
+  // Generic fallback hides raw technical details
+  return 'Something went wrong. Please try again.';
+}
+
 export function calculateMealTotals(items: { food: Food; quantity: number }[]) {
   return items.reduce(
     (acc, item) => {
