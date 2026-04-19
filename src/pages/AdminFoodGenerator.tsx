@@ -19,6 +19,7 @@ interface NutrientSources {
   total_fiber?: FieldSource;
   soluble_fiber?: FieldSource;
   insoluble_fiber?: FieldSource;
+  gi?: FieldSource;
   sugar?: FieldSource;
   sodium?: FieldSource;
   cholesterol?: FieldSource;
@@ -40,6 +41,7 @@ interface NutritionResult {
   total_fiber: number | null;
   soluble_fiber: number | null;
   insoluble_fiber: number | null;
+  gi: number | null;
   // Extended
   sugar: number | null;
   sodium: number | null;
@@ -74,7 +76,7 @@ async function lookupCache(query: string): Promise<NutritionResult | null> {
     .select(`
       name_hu, name_en,
       calories, protein, carbs, fat,
-      total_fiber, soluble_fiber, insoluble_fiber,
+      total_fiber, soluble_fiber, insoluble_fiber, gi,
       sugar, sodium, cholesterol, calcium, iron, potassium, magnesium
     `)
     .or(`name_hu.ilike.${q},name_en.ilike.${q}`)
@@ -93,6 +95,7 @@ async function lookupCache(query: string): Promise<NutritionResult | null> {
     total_fiber: r1(data.total_fiber),
     soluble_fiber: r1(data.soluble_fiber),
     insoluble_fiber: r1(data.insoluble_fiber),
+    gi: r1(data.gi),
     sugar: r1(data.sugar),
     sodium: r1(data.sodium),
     cholesterol: r1(data.cholesterol),
@@ -181,6 +184,7 @@ async function lookupEdamam(query: string): Promise<NutritionResult> {
     total_fiber:     nutrientValues.total_fiber     ?? null,
     soluble_fiber:   null, // not in Edamam parser — filled by OpenAI if available
     insoluble_fiber: null, // not in Edamam parser — filled by OpenAI if available
+    gi:              null,
     sugar:           nutrientValues.sugar           ?? null,
     sodium:          nutrientValues.sodium          ?? null,
     cholesterol:     nutrientValues.cholesterol     ?? null,
@@ -317,6 +321,7 @@ export default function AdminFoodGenerator() {
       total_fiber:     result.total_fiber,
       soluble_fiber:   result.soluble_fiber,
       insoluble_fiber: result.insoluble_fiber,
+      gi:              result.gi,
       sugar:           result.sugar,
       sodium:          result.sodium,
       cholesterol:     result.cholesterol,
@@ -408,6 +413,7 @@ export default function AdminFoodGenerator() {
               { key: 'carbs', label: 'Carbs', unit: 'g' },
               { key: 'fat', label: 'Fat', unit: 'g' },
               { key: 'total_fiber', label: 'Fiber (total)', unit: 'g' },
+              { key: 'gi', label: 'Glycemic Index (GI)', unit: '' },
               { key: 'soluble_fiber', label: 'Soluble fiber', unit: 'g', ai: true },
               { key: 'insoluble_fiber', label: 'Insoluble fiber', unit: 'g', ai: true },
               { key: 'sugar', label: 'Sugar', unit: 'g' },
@@ -418,7 +424,10 @@ export default function AdminFoodGenerator() {
               { key: 'potassium', label: 'Potassium', unit: 'mg' },
               { key: 'magnesium', label: 'Magnesium', unit: 'mg' },
             ]
-              .filter((field) => result[field.key as keyof NutritionResult] != null)
+              .filter((field) => 
+                result[field.key as keyof NutritionResult] != null || 
+                ['gi', 'soluble_fiber', 'insoluble_fiber'].includes(field.key)
+              )
               .map((field) => {
                 const k = field.key as keyof NutritionResult;
                 const val = result[k] as number;

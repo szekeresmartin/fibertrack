@@ -9,6 +9,7 @@ export interface Food {
   soluble_fiber: number;
   insoluble_fiber: number;
   total_fiber: number;
+  gi?: number;
   source: 'sheets' | 'local';
   isDeleted?: boolean;
 }
@@ -33,4 +34,5 @@ export interface DailyTotals {
   soluble_fiber: number;
   insoluble_fiber: number;
   total_fiber: number;
+  gl: number;
 }

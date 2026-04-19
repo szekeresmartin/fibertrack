@@ -31,10 +31,21 @@ export function getFriendlyErrorMessage(err: unknown): string {
   return 'Something went wrong. Please try again.';
 }
 
+export function getGlycemicLoadLabel(gl: number): { label: string; color: string } {
+  if (gl < 10.5) return { label: 'Low', color: 'text-green-600' };
+  if (gl < 19.5) return { label: 'Medium', color: 'text-yellow-600' };
+  return { label: 'High', color: 'text-red-500' };
+}
+
 export function calculateMealTotals(items: { food: Food; quantity: number }[]) {
   return items.reduce(
     (acc, item) => {
       const factor = item.quantity / 100;
+      const gi = item.food.gi || 0;
+      const carbs = item.food.carbs || 0;
+      // Formula: GL = (gi * carbs * quantityGrams) / 10000
+      const itemGL = (gi * carbs * item.quantity) / 10000;
+
       return {
         calories: acc.calories + item.food.calories * factor,
         carbs: acc.carbs + item.food.carbs * factor,
@@ -43,6 +54,7 @@ export function calculateMealTotals(items: { food: Food; quantity: number }[]) {
         soluble_fiber: acc.soluble_fiber + item.food.soluble_fiber * factor,
         insoluble_fiber: acc.insoluble_fiber + item.food.insoluble_fiber * factor,
         total_fiber: acc.total_fiber + item.food.total_fiber * factor,
+        gl: acc.gl + itemGL,
       };
     },
     {
@@ -53,6 +65,7 @@ export function calculateMealTotals(items: { food: Food; quantity: number }[]) {
       soluble_fiber: 0,
       insoluble_fiber: 0,
       total_fiber: 0,
+      gl: 0,
     }
   );
 }

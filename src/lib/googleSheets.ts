@@ -27,6 +27,7 @@ export async function fetchFoodsFromSheets(url: string = DEFAULT_SHEET_URL): Pro
             soluble_fiber: Number(row.soluble_fiber) || 0,
             insoluble_fiber: Number(row.insoluble_fiber) || 0,
             total_fiber: Number(row.total_fiber) || 0,
+            gi: row.gi != null && row.gi !== '' ? Number(row.gi) : undefined,
             source: 'sheets',
           }));
           resolve(foods);

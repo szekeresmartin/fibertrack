@@ -25,8 +25,8 @@ import {
 } from 'lucide-react';
 import { Food, Meal, DailyTotals, MealItem } from './types';
 import { fetchFoodsFromSheets } from './lib/googleSheets';
-import { cn, calculateMealTotals, getFriendlyErrorMessage } from './lib/utils';
-import { format } from 'date-fns';
+import { cn, calculateMealTotals, getFriendlyErrorMessage, getGlycemicLoadLabel } from './lib/utils';
+import { format, addDays, isSameDay, isToday, startOfToday } from 'date-fns';
 import { supabase } from './lib/supabase';
 import { User } from '@supabase/supabase-js';
 
@@ -42,6 +42,70 @@ const getFoodOrUnknown = (foods: Food[], id: string): Food => {
     isDeleted: true
   };
 };
+
+// ─── DayStrip Component ───────────────────────────────────────────────────────
+interface DayStripProps {
+  selectedDate: Date;
+  onSelect: (date: Date) => void;
+}
+
+function DayStrip({ selectedDate, onSelect }: DayStripProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  
+  // Generate 7 days centered on selectedDate
+  const days = useMemo(() => {
+    return Array.from({ length: 7 }).map((_, i) => addDays(selectedDate, i - 3));
+  }, [selectedDate]);
+
+  useEffect(() => {
+    // Auto-scroll to selected day on change
+    const activeBtn = containerRef.current?.querySelector('[data-active="true"]');
+    if (activeBtn) {
+      activeBtn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    }
+  }, [selectedDate]);
+
+  return (
+    <div 
+      ref={containerRef}
+      className="flex gap-2 overflow-x-auto pb-4 pt-2 no-scrollbar scroll-smooth px-4 sm:px-0"
+      style={{ scrollSnapType: 'x proximity' }}
+    >
+      {days.map((day) => {
+        const active = isSameDay(day, selectedDate);
+        const today = isToday(day);
+        
+        return (
+          <button
+            key={day.toISOString()}
+            data-active={active}
+            onClick={() => onSelect(day)}
+            className={cn(
+              "flex flex-col items-center min-w-[56px] py-3 rounded-2xl transition-all active:scale-95",
+              active 
+                ? "bg-ink text-white shadow-lg scale-105" 
+                : "bg-white border border-border text-subtle hover:border-accent/40"
+            )}
+            style={{ scrollSnapAlign: 'center' }}
+          >
+            <span className={cn(
+              "text-[10px] font-bold uppercase tracking-widest mb-1",
+              today && !active && "text-accent"
+            )}>
+              {format(day, 'EEE')}
+            </span>
+            <span className="text-[18px] font-extrabold leading-none">
+              {format(day, 'd')}
+            </span>
+            {today && !active && (
+              <div className="w-1 h-1 bg-accent rounded-full mt-1" />
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 // --------------------------------------
 
 export default function App() {
@@ -60,6 +124,7 @@ export default function App() {
   const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [toastMessage, setToastMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
+  const nowIndicatorRef = useRef<HTMLDivElement>(null);
 
   const showToast = (text: string, type: 'success' | 'error') => {
     setToastMessage({ text, type });
@@ -184,10 +249,19 @@ export default function App() {
     console.log('FINAL foods state:', foods);
   }, [foods]);
 
-  // Persistent storage effects for settings only
   useEffect(() => {
     localStorage.setItem('fiber_track_sheet_url', sheetUrl);
   }, [sheetUrl]);
+
+  // Auto-scroll to "Now" indicator on today's view
+  useEffect(() => {
+    if (view === 'timeline' && isToday(selectedDate) && nowIndicatorRef.current) {
+      const timer = setTimeout(() => {
+        nowIndicatorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 600);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedDate, meals.length, view]);
 
   const dailyTotals = useMemo(() => {
     return meals.reduce((acc, meal) => {
@@ -205,10 +279,11 @@ export default function App() {
         soluble_fiber: acc.soluble_fiber + totals.soluble_fiber,
         insoluble_fiber: acc.insoluble_fiber + totals.insoluble_fiber,
         total_fiber: acc.total_fiber + totals.total_fiber,
+        gl: acc.gl + totals.gl,
       };
     }, {
       calories: 0, carbs: 0, protein: 0, fat: 0,
-      soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0
+      soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gl: 0
     });
   }, [meals, foods]);
 
@@ -331,42 +406,16 @@ export default function App() {
       {/* Desktop Header — hidden on mobile (mobile uses compact sticky header below) */}
       <header className="hidden lg:flex sticky top-0 z-10 bg-card border-b border-border px-6 py-6 sm:px-16 flex-col sm:flex-row justify-between items-start sm:items-end gap-6">
         <div className="title-group w-full sm:w-auto">
-          {/* Date Navigator */}
-          <div className="flex items-center gap-3 mb-6">
-            <button
-              onClick={() => {
-                const prev = new Date(selectedDate);
-                prev.setDate(prev.getDate() - 1);
-                setSelectedDate(prev);
-              }}
-              className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors active:scale-95"
-            >
-              <ChevronLeft size={20} className="text-subtle" />
-            </button>
-            <span className="text-[14px] font-[800] uppercase tracking-widest text-ink select-none min-w-[140px] text-center">
-              {selectedDate.toDateString() === new Date().toDateString() 
-                ? "Today" 
-                : format(selectedDate, 'MMM d, yyyy')}
-            </span>
-            <button
-              onClick={() => {
-                const next = new Date(selectedDate);
-                next.setDate(next.getDate() + 1);
-                setSelectedDate(next);
-              }}
-              className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors active:scale-95"
-            >
-              <ChevronRight size={20} className="text-subtle" />
-            </button>
-          </div>
-
           <h1 className="text-[14px] uppercase tracking-[0.1em] text-subtle font-bold mb-2">
             Fiber Intake {selectedDate.toDateString() === new Date().toDateString() ? 'Today' : ''}
           </h1>
-          <div className="text-[84px] font-[800] leading-[0.9] tracking-[-3px]">
+          <div className="text-[84px] font-[800] leading-[0.9] tracking-[-3px] mb-8">
             {dailyTotals.total_fiber.toFixed(1)}
             <span className="text-subtle text-[40px] tracking-[-1px] ml-2">/ 35g</span>
           </div>
+
+          {/* Date Selector Strip */}
+          <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} />
         </div>
 
         <div className="flex flex-wrap gap-8 pb-2">
@@ -374,6 +423,7 @@ export default function App() {
           <StatCard label="Carbs" value={Math.round(dailyTotals.carbs)} unit="g" />
           <StatCard label="Protein" value={Math.round(dailyTotals.protein)} unit="g" />
           <StatCard label="Fat" value={Math.round(dailyTotals.fat)} unit="g" />
+          <StatCard label="GL" value={Math.round(dailyTotals.gl)} unit="" highlight />
         </div>
 
         <div className="absolute top-4 right-6 flex items-center gap-2">
@@ -393,32 +443,10 @@ export default function App() {
           </button>
         </div>
       </header>
-
       {/* Mobile header: compact date nav + fiber progress bar */}
       <div className="lg:hidden sticky top-0 z-10 bg-card border-b border-border">
-        {/* Date navigator */}
-        <div className="flex items-center justify-between px-5 pt-4 pb-2">
-          <button
-            onClick={() => { const d = new Date(selectedDate); d.setDate(d.getDate()-1); setSelectedDate(d); }}
-            className="p-2 hover:bg-gray-100 rounded-full active:scale-90 transition-all"
-          >
-            <ChevronLeft size={20} className="text-subtle" />
-          </button>
-          <div className="text-center">
-            <div className="text-[15px] font-[800] tracking-tight text-ink">
-              {selectedDate.toDateString() === new Date().toDateString() ? 'Today' : format(selectedDate, 'MMM d, yyyy')}
-            </div>
-            <div className="text-[11px] text-subtle uppercase tracking-widest font-bold mt-0.5">Fiber Intake</div>
-          </div>
-          <button
-            onClick={() => { const d = new Date(selectedDate); d.setDate(d.getDate()+1); setSelectedDate(d); }}
-            className="p-2 hover:bg-gray-100 rounded-full active:scale-90 transition-all"
-          >
-            <ChevronRight size={20} className="text-subtle" />
-          </button>
-        </div>
         {/* Fiber progress row */}
-        <div className="px-5 pb-4">
+        <div className="px-5 pt-8 pb-4">
           <div className="flex items-end justify-between mb-1.5">
             <span className="text-[30px] font-[800] tracking-tight text-ink leading-none">{dailyTotals.total_fiber.toFixed(1)}<span className="text-[16px] text-subtle font-semibold ml-1">/ 35g</span></span>
             <span className="text-[11px] font-bold text-subtle uppercase tracking-widest">{Math.round(Math.min(dailyTotals.total_fiber / 35 * 100, 100))}%</span>
@@ -433,7 +461,11 @@ export default function App() {
             <span>{Math.round(dailyTotals.calories)} kcal</span>
             <span>{Math.round(dailyTotals.protein)}g protein</span>
             <span>{Math.round(dailyTotals.fat)}g fat</span>
+            <span className="text-accent">GL: {Math.round(dailyTotals.gl)}</span>
           </div>
+        </div>
+        <div className="border-b border-border">
+          <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} />
         </div>
       </div>
 
@@ -443,82 +475,202 @@ export default function App() {
       )}>
         {view === 'timeline' ? (
           <>
-            {/* === MOBILE: Card list layout === */}
+            {/* === MOBILE: Chronological list === */}
             <div className="lg:hidden overflow-y-auto bg-bg">
               {isLoading ? (
                 <div className="flex items-center justify-center h-48">
                   <Loader2 className="animate-spin text-accent" size={32} />
                 </div>
               ) : sortedMeals.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-64 text-subtle">
-                  <Clock size={44} className="mb-4 opacity-20" />
-                  <p className="italic text-sm">No meals for this day</p>
+                <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
+                  <div className="w-16 h-16 bg-gray-50 rounded-3xl flex items-center justify-center mb-6">
+                    <Clock size={32} className="text-subtle/30" />
+                  </div>
+                  <h3 className="text-ink font-bold text-lg mb-2">No meals logged yet</h3>
+                  <p className="text-subtle text-sm max-w-[200px] leading-relaxed mb-8">
+                    Track your fiber intake by adding your first meal of the day.
+                  </p>
                   <button
                     onClick={() => setIsMealModalOpen(true)}
-                    className="mt-4 px-6 py-2.5 bg-accent/10 text-accent rounded-full font-bold text-[12px] uppercase tracking-widest hover:bg-accent/20 active:scale-95 transition-all"
+                    className="flex items-center gap-2 px-8 py-3 bg-ink text-white rounded-2xl font-bold text-sm transition-all active:scale-95 shadow-sm hover:shadow-md"
                   >
-                    Log a meal
+                    <Plus size={18} />
+                    Add Meal
                   </button>
                 </div>
               ) : (
-                <div className="px-4 pt-4 pb-28 flex flex-col gap-3">
-                  {sortedMeals.map(meal => (
-                    <MealCard
-                      key={meal.id}
-                      meal={meal}
-                      foods={foods}
-                      isSelected={String(meal.id) === selectedMealId}
-                      onClick={() => setSelectedMealId(sel => sel === String(meal.id) ? null : String(meal.id))}
-                      onEdit={() => { setEditingMeal(meal); setIsMealModalOpen(true); }}
-                      onDelete={() => handleDeleteMeal(String(meal.id))}
-                    />
-                  ))}
+                <div className="relative px-6 pt-4 pb-28">
+                  {/* Vertical Timeline Line */}
+                  <div className="absolute left-[38px] top-6 bottom-32 w-[2px] bg-border/40" />
+                  
+                  <div className="flex flex-col gap-4 relative">
+                    {(() => {
+                      const elements: React.ReactNode[] = [];
+                      const now = new Date();
+                      const nowMin = now.getHours() * 60 + now.getMinutes();
+                      let indicatorAdded = false;
+
+                      sortedMeals.forEach((meal, index) => {
+                        const [mH, mM] = meal.time.split(':').map(Number);
+                        const mealMin = mH * 60 + mM;
+
+                        // Add "Now" indicator if this is the first meal in the future
+                        if (!indicatorAdded && isToday(selectedDate) && mealMin > nowMin) {
+                          elements.push(
+                            <div key="now-indicator-mobile" ref={nowIndicatorRef} className="py-2 flex items-center gap-3">
+                              <div className="w-2 h-2 rounded-full bg-accent animate-pulse ml-[17px] relative z-10" />
+                              <span className="text-[10px] font-bold text-accent uppercase tracking-widest">Now</span>
+                              <div className="h-px bg-accent/20 flex-1" />
+                            </div>
+                          );
+                          indicatorAdded = true;
+                        }
+
+                        let gapType: 'none' | 'medium' | 'large' = 'none';
+                        if (index > 0) {
+                          const prevMealTime = sortedMeals[index - 1].time.split(':').map(Number);
+                          const diffInMinutes = (mH * 60 + mM) - (prevMealTime[0] * 60 + prevMealTime[1]);
+                          if (diffInMinutes >= 240) gapType = 'large';
+                          else if (diffInMinutes >= 120) gapType = 'medium';
+                        }
+
+                        elements.push(
+                          <React.Fragment key={meal.id}>
+                            {gapType === 'medium' && <div className="h-4" />}
+                            {gapType === 'large' && (
+                              <div className="py-4 flex items-center gap-4 opacity-10">
+                                <div className="h-px bg-ink flex-1" />
+                                <div className="h-px bg-ink flex-1" />
+                              </div>
+                            )}
+                            <MealCard
+                              meal={meal}
+                              foods={foods}
+                              isSelected={String(meal.id) === selectedMealId}
+                              onClick={() => setSelectedMealId(sel => sel === String(meal.id) ? null : String(meal.id))}
+                              onEdit={() => { setEditingMeal(meal); setIsMealModalOpen(true); }}
+                              onDelete={() => handleDeleteMeal(String(meal.id))}
+                            />
+                          </React.Fragment>
+                        );
+                      });
+
+                      // If "Now" is after all meals
+                      if (!indicatorAdded && isToday(selectedDate)) {
+                        elements.push(
+                          <div key="now-indicator-bottom-mobile" ref={nowIndicatorRef} className="py-2 flex items-center gap-3">
+                            <div className="w-2 h-2 rounded-full bg-accent animate-pulse ml-[17px] relative z-10" />
+                            <span className="text-[10px] font-bold text-accent uppercase tracking-widest">Now</span>
+                            <div className="h-px bg-accent/20 flex-1" />
+                          </div>
+                        );
+                      }
+
+                      return elements;
+                    })()}
+                  </div>
                 </div>
               )}
             </div>
 
-            {/* === DESKTOP: Absolute timeline === */}
-            <div className="hidden lg:block p-10 sm:p-16 border-r border-border bg-bg overflow-y-auto">
-              {meals.length === 0 && !isLoading && (
-                <div className="flex flex-col items-center justify-center h-64 text-subtle italic">
-                  <Clock size={48} className="mb-4 opacity-20" />
-                  <p>No meals tracked for this day.</p>
+            {/* === DESKTOP: Chronological list === */}
+            <div className="hidden lg:block p-8 border-r border-border bg-bg overflow-y-auto">
+              {sortedMeals.length === 0 && !isLoading ? (
+                <div className="flex flex-col items-center justify-center py-32 text-center">
+                  <div className="w-20 h-20 bg-gray-50 rounded-[2.5rem] flex items-center justify-center mb-8">
+                    <Clock size={40} className="text-subtle/20" />
+                  </div>
+                  <h3 className="text-ink font-bold text-xl mb-3">No meals tracked for this day</h3>
+                  <p className="text-subtle text-sm max-w-[280px] leading-relaxed mb-10">
+                    Your timeline is empty. Start your daily fiber tracker by logging a new meal.
+                  </p>
                   <button
                     onClick={() => setIsMealModalOpen(true)}
-                    className="mt-4 text-accent font-bold uppercase tracking-widest text-[12px] hover:underline"
+                    className="flex items-center gap-2 px-10 py-4 bg-ink text-white rounded-2xl font-bold text-[15px] transition-all active:scale-95 shadow-lg shadow-ink/10 hover:shadow-xl hover:shadow-ink/20 hover:-translate-y-0.5"
                   >
-                    Log a meal
+                    <Plus size={20} />
+                    Add Your First Meal
                   </button>
                 </div>
-              )}
-              <div className="relative border-l border-border ml-16 min-h-[1200px]">
-                {Array.from({ length: 25 }).map((_, i) => (
-                  <div key={i} className="absolute w-full" style={{ top: `${(i / 24) * 100}%` }}>
-                    <div className="absolute -left-16 w-12 text-right text-[12px] text-subtle font-medium">
-                      {String(i).padStart(2, '0')}:00
-                    </div>
+              ) : (
+                <div className="relative px-12 pt-4 pb-28">
+                  {/* Vertical Timeline Line */}
+                  <div className="absolute left-[88px] top-6 bottom-32 w-[2px] bg-border/30" />
 
-                    {/* Meals at this hour */}
-                    <div className="ml-5 space-y-4">
-                      {sortedMeals.filter(m => parseInt(m.time.split(':')[0]) === i).map(meal => (
-                        <MealBlock
-                          key={meal.id}
-                          meal={meal}
-                          foods={foods}
-                          isSelected={String(meal.id) === selectedMealId}
-                          onClick={() => setSelectedMealId(sel => sel === String(meal.id) ? null : String(meal.id))}
-                          onEdit={() => {
-                            setEditingMeal(meal);
-                            setIsMealModalOpen(true);
-                          }}
-                          onDelete={() => handleDeleteMeal(String(meal.id))}
-                        />
-                      ))}
-                    </div>
+                  <div className="flex flex-col gap-6 relative">
+                    {(() => {
+                      const elements: React.ReactNode[] = [];
+                      const now = new Date();
+                      const nowMin = now.getHours() * 60 + now.getMinutes();
+                      let indicatorAdded = false;
+
+                      sortedMeals.forEach((meal, index) => {
+                        const [mH, mM] = meal.time.split(':').map(Number);
+                        const mealMin = mH * 60 + mM;
+
+                        // Add "Now" indicator if this is the first meal in the future
+                        if (!indicatorAdded && isToday(selectedDate) && mealMin > nowMin) {
+                          elements.push(
+                            <div key="now-indicator-desktop" ref={nowIndicatorRef} className="py-4 flex items-center gap-4">
+                              <div className="w-3 h-3 rounded-full bg-accent animate-pulse ml-[35px] relative z-10 border-4 border-bg" />
+                              <span className="text-[11px] font-bold text-accent uppercase tracking-widest">Current Time</span>
+                              <div className="h-px bg-accent/20 flex-1 pr-12" />
+                            </div>
+                          );
+                          indicatorAdded = true;
+                        }
+
+                        let gapType: 'none' | 'medium' | 'large' = 'none';
+                        if (index > 0) {
+                          const prevMealTime = sortedMeals[index - 1].time.split(':').map(Number);
+                          const diffInMinutes = (mH * 60 + mM) - (prevMealTime[0] * 60 + prevMealTime[1]);
+                          if (diffInMinutes >= 240) gapType = 'large';
+                          else if (diffInMinutes >= 120) gapType = 'medium';
+                        }
+
+                        elements.push(
+                          <React.Fragment key={meal.id}>
+                            {gapType === 'medium' && <div className="h-6" />}
+                            {gapType === 'large' && (
+                              <div className="py-8 flex items-center gap-4 opacity-20">
+                                <div className="h-px bg-ink flex-1" />
+                                <Clock size={16} className="text-ink" />
+                                <div className="h-px bg-ink flex-1" />
+                              </div>
+                            )}
+                            <MealBlock
+                              meal={meal}
+                              foods={foods}
+                              isSelected={String(meal.id) === selectedMealId}
+                              onClick={() => setSelectedMealId(sel => sel === String(meal.id) ? null : String(meal.id))}
+                              onEdit={() => {
+                                setEditingMeal(meal);
+                                setIsMealModalOpen(true);
+                              }}
+                              onDelete={() => handleDeleteMeal(String(meal.id))}
+                            />
+                          </React.Fragment>
+                        );
+                      });
+
+                      // If "Now" is after all meals
+                      if (!indicatorAdded && isToday(selectedDate)) {
+                        elements.push(
+                          <div key="now-indicator-bottom-desktop" ref={nowIndicatorRef} className="py-4 flex items-center gap-4">
+                            <div className="w-3 h-3 rounded-full bg-accent animate-pulse ml-[35px] relative z-10 border-4 border-bg" />
+                            <span className="text-[11px] font-bold text-accent uppercase tracking-widest">Current Time</span>
+                            <div className="h-px bg-accent/20 flex-1 pr-12" />
+                          </div>
+                        );
+                      }
+
+                      return elements;
+                    })()}
                   </div>
-                ))}
-              </div>
+                </div>
+              )}
             </div>
+
 
             {/* Detail Panel / Sidebar (desktop only) */}
             <aside className="hidden lg:flex flex-col bg-card p-10 gap-8 overflow-y-auto border-l border-border">
@@ -545,6 +697,7 @@ export default function App() {
                     <div className="grid grid-cols-2 gap-4">
                       <StatCard small label="Calories" value={Math.round(totals.calories).toLocaleString()} unit="" />
                       <StatCard small label="Protein" value={Math.round(totals.protein)} unit="g" />
+                      <StatCard small label="GL" value={Math.round(totals.gl)} unit="" highlight />
                       <StatCard small label="Carbs" value={Math.round(totals.carbs)} unit="g" />
                       <StatCard small label="Fat" value={Math.round(totals.fat)} unit="g" />
                     </div>
@@ -571,11 +724,21 @@ export default function App() {
                             <h4 className={cn("text-[14px]", !item.food.isDeleted ? "font-semibold" : "text-red-500 italic")}>
                               {item.food.name_hu}
                               {item.food.name_en && <span className="text-xs text-gray-500 ml-1 font-normal opacity-80">({item.food.name_en})</span>}
+                              {item.food.gi != null && <span className={cn("ml-2 font-bold", item.food.gi < 56 ? "text-green-600" : item.food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {item.food.gi})</span>}
                             </h4>
-                            <div className="text-[13px] text-gray-500 mt-0.5">{item.quantity}g</div>
+                            <div className="text-[13px] text-gray-500 mt-0.5">
+                              {item.quantity}g
+                            </div>
                           </div>
-                          <div className="font-mono font-bold text-[14px]">
-                            {(item.food.total_fiber * item.quantity / 100).toFixed(1)}g
+                          <div className="text-right">
+                            <div className="font-mono font-bold text-[14px]">
+                              {(item.food.total_fiber * item.quantity / 100).toFixed(1)}g
+                            </div>
+                            {item.food.gi != null && (
+                              <div className="text-[10px] text-subtle font-bold">
+                                GL: {Math.round((item.food.gi * item.food.carbs * item.quantity) / 10000)}
+                              </div>
+                            )}
                           </div>
                         </li>
                       ))}
@@ -968,20 +1131,18 @@ function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealCa
         onClick={onClick}
       >
         <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-2 flex-1 min-w-0">
-            <div className="flex flex-col items-center">
-              <span className="text-[11px] font-bold text-accent uppercase tracking-widest">{meal.time}</span>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-[17px] font-bold text-ink leading-tight truncate">
+              <span className="text-xs font-normal text-subtle mr-2 font-mono uppercase tracking-tight">{meal.time}</span>
+              {meal.name}
+            </h3>
+            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+              <span className="text-[11px] font-bold bg-[#DCFCE7] text-[#166534] px-2 py-0.5 rounded-full">{totals.total_fiber.toFixed(1)}g fiber</span>
+              <span className={cn("text-[11px] font-bold px-2 py-0.5 rounded-full bg-gray-100", getGlycemicLoadLabel(totals.gl).color)}>GL: {Math.round(totals.gl)}</span>
+              <span className="text-[11px] text-subtle">{Math.round(totals.calories)} kcal</span>
               {isNow && (
-                <span className="text-[9px] font-bold bg-accent text-white px-1.5 py-0.5 rounded-full mt-0.5">Now</span>
+                <span className="text-[10px] font-bold bg-accent text-white px-2 py-0.5 rounded-full">Now</span>
               )}
-            </div>
-            <div className="min-w-0">
-              <h3 className="text-[16px] font-bold text-ink leading-tight truncate">{meal.name}</h3>
-              <div className="flex items-center gap-2 mt-1 flex-wrap">
-                <span className="text-[11px] font-bold bg-[#DCFCE7] text-[#166534] px-2 py-0.5 rounded-full">{totals.total_fiber.toFixed(1)}g fiber</span>
-                <span className="text-[11px] text-subtle">{Math.round(totals.calories)} kcal</span>
-                <span className="text-[11px] text-subtle">{mealItems.length} item{mealItems.length !== 1 ? 's' : ''}</span>
-              </div>
             </div>
           </div>
           <ChevronRight
@@ -1009,6 +1170,7 @@ function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealCa
                   { label: 'Carbs', val: Math.round(totals.carbs) + 'g' },
                   { label: 'Fat', val: Math.round(totals.fat) + 'g' },
                   { label: 'Fiber', val: totals.total_fiber.toFixed(1) + 'g' },
+                  { label: 'GL', val: Math.round(totals.gl) },
                 ].map(m => (
                   <div key={m.label} className="text-center">
                     <div className="text-[15px] font-[800] text-ink">{m.val}</div>
@@ -1027,11 +1189,15 @@ function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealCa
                         {item.food.name_en && (
                           <span className="text-gray-500 font-normal ml-1 text-xs">({item.food.name_en})</span>
                         )}
+                        {item.food.gi != null && <span className={cn("ml-1 font-bold", item.food.gi < 56 ? "text-green-600" : item.food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {item.food.gi})</span>}
                       </span>
                       <span className="text-[11px] text-subtle ml-2">{item.quantity}g</span>
                     </div>
-                    <span className="font-mono text-[12px] font-bold text-accent">
+                    <span className="font-mono text-[12px] font-bold text-accent text-right">
                       {(item.food.total_fiber * item.quantity / 100).toFixed(1)}g
+                      {item.food.gi != null && (
+                        <span className="block text-[9px] text-subtle font-bold">GL: {Math.round((item.food.gi * item.food.carbs * item.quantity) / 10000)}</span>
+                      )}
                     </span>
                   </li>
                 ))}
@@ -1093,10 +1259,18 @@ function MealBlock({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealB
     >
       <div className="flex justify-between items-start">
         <div>
-          <div className="text-[12px] text-accent font-bold mb-1">{meal.time}</div>
-          <h3 className="text-[18px] font-bold">{meal.name}</h3>
-          <div className="inline-block mt-2 text-[12px] font-semibold bg-[#DCFCE7] text-[#166534] px-2 py-0.5 rounded">
-            {totals.total_fiber.toFixed(1)}g Fiber
+          <h3 className="text-[18px] font-bold">
+            <span className="text-xs font-normal text-subtle mr-3 font-mono uppercase tracking-tight">{meal.time}</span>
+            {meal.name}
+          </h3>
+          <div className="flex items-center gap-2 mt-2">
+            <div className="inline-block text-[12px] font-semibold bg-[#DCFCE7] text-[#166534] px-2 py-0.5 rounded">
+              {totals.total_fiber.toFixed(1)}g Fiber
+            </div>
+            <div className={cn("inline-block text-[12px] font-semibold px-2 py-0.5 rounded bg-gray-100", getGlycemicLoadLabel(totals.gl).color)}>
+              GL: {Math.round(totals.gl)}
+            </div>
+            <div className="text-[12px] text-subtle ml-2">{Math.round(totals.calories)} kcal</div>
           </div>
         </div>
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1326,9 +1500,17 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                         className="w-full px-4 py-3 text-left hover:bg-green-50 focus:bg-green-50 flex justify-between items-center transition-all active:scale-[0.98]"
                       >
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="font-medium text-sm text-ink">{food.name_hu}</span>
+                          <span className="font-medium text-sm text-ink">
+                            {food.name_hu}
+                            {food.gi != null && <span className={cn("ml-2 font-bold", food.gi < 56 ? "text-green-600" : food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {food.gi})</span>}
+                          </span>
                         </div>
-                        <span className="text-xs font-semibold text-gray-400 bg-gray-100 px-2 py-0.5 rounded">{food.total_fiber}g <span className="font-normal opacity-70">/ 100g</span></span>
+                        <div className="flex items-center gap-2 text-xs font-semibold text-gray-400">
+                          <span className="bg-gray-100 px-2 py-0.5 rounded">{food.total_fiber}g <span className="font-normal opacity-70">/ 100g</span></span>
+                          {food.gi != null && food.carbs != null && (
+                            <span className="bg-gray-100 px-2 py-0.5 rounded">GL: {Math.round((food.gi * food.carbs * 100) / 10000)} <span className="font-normal opacity-70">/ 100g</span></span>
+                          )}
+                        </div>
                       </button>
                     ))}
                     {filteredFoods.length === 0 && (
@@ -1351,10 +1533,16 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                       <div className={cn("font-medium text-sm text-ink", food.isDeleted && 'text-red-500 italic')}>
                         {food.name_hu}
                         {food.name_en && <span className="text-xs text-gray-500 ml-1 font-normal">({food.name_en})</span>}
+                        {food.gi != null && <span className={cn("ml-2 font-bold", food.gi < 56 ? "text-green-600" : food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {food.gi})</span>}
                       </div>
-                      <div className="text-xs text-gray-500 mt-0.5">{food.calories} kcal / 100g</div>
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {food.calories} kcal / 100g
+                      </div>
                       <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">
                         <span className="text-green-600">{(food.total_fiber * Number(item.quantityGrams) / 100).toFixed(1)}g</span> Fiber
+                        {food.gi != null && (
+                          <span className="ml-2 text-accent">GL: {Math.round((food.gi * food.carbs * Number(item.quantityGrams)) / 10000)}</span>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -1395,8 +1583,8 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                 <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fiber</div>
               </div>
               <div className="text-center">
-                <div className="text-lg font-bold">{Math.round(mealTotals.calories)}</div>
-                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Kcal</div>
+                <div className="text-lg font-bold text-accent">{Math.round(mealTotals.gl)}</div>
+                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">GL</div>
               </div>
             </div>
             <button
@@ -1426,7 +1614,7 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
   const [search, setSearch] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   const [newFood, setNewFood] = useState<Omit<Food, 'id' | 'source'>>({
-    name_hu: '', name_en: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0
+    name_hu: '', name_en: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gi: undefined
   });
 
   const filteredFoods = foods.filter(f => (f.name_hu || '').toLowerCase().includes(search.toLowerCase()));
@@ -1445,7 +1633,7 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
     localStorage.setItem('fiber_track_local_foods', JSON.stringify(local));
 
     setIsAdding(false);
-    setNewFood({ name_hu: '', name_en: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0 });
+    setNewFood({ name_hu: '', name_en: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gi: undefined });
   };
 
   const handleDeleteFood = (id: string) => {
@@ -1524,6 +1712,7 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
                 <tr key={food.id} className="border-b transition-colors hover:bg-gray-50/50 group">
                   <td className="py-4 font-medium">
                     {food.name_hu}
+                    {food.gi != null && <span className={cn("ml-2 font-bold", food.gi < 56 ? "text-green-600" : food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {food.gi})</span>}
                     {food.name_en && <span className="block text-xs text-gray-500 mt-1 font-normal opacity-70">({food.name_en})</span>}
                   </td>
                   <td className="py-4 text-right font-bold text-green-600">{food.total_fiber}g</td>
@@ -1595,6 +1784,10 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
                     <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fat</label>
                     <input type="number" value={newFood.fat} onChange={e => setNewFood({ ...newFood, fat: Number(e.target.value) })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500" />
                   </div>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Glycemic Index (Optional)</label>
+                  <input type="number" placeholder="e.g. 55" value={newFood.gi === undefined ? '' : newFood.gi} onChange={e => setNewFood({ ...newFood, gi: e.target.value ? Number(e.target.value) : undefined })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500" />
                 </div>
               </div>
               <div className="flex gap-3 pt-4">
