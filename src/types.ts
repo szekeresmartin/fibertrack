@@ -10,6 +10,7 @@ export interface Food {
   insoluble_fiber: number;
   total_fiber: number;
   gi?: number;
+  brand?: string;
   source: 'sheets' | 'local';
   isDeleted?: boolean;
 }

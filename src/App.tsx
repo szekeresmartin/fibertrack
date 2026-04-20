@@ -21,27 +21,21 @@ import {
   LogOut,
   Mail,
   Loader2,
-  Lock
+  Lock,
+  Download,
+  FileText,
+  Calendar,
+  Copy
 } from 'lucide-react';
 import { Food, Meal, DailyTotals, MealItem } from './types';
 import { fetchFoodsFromSheets } from './lib/googleSheets';
-import { cn, calculateMealTotals, getFriendlyErrorMessage, getGlycemicLoadLabel } from './lib/utils';
+import { cn, calculateMealTotals, getFriendlyErrorMessage, getGlycemicLoadLabel, getFoodOrUnknown } from './lib/utils';
+import { downloadDayAsCSV, generateDaySummaryText } from './lib/exportUtils';
 import { format, addDays, isSameDay, isToday, startOfToday } from 'date-fns';
 import { supabase } from './lib/supabase';
 import { User } from '@supabase/supabase-js';
 
 // No mock authentication, fully relying on Supabase state.
-
-const getFoodOrUnknown = (foods: Food[], id: string): Food => {
-  return foods.find(f => f.id === id) || {
-    id,
-    name_hu: 'Unknown / Deleted Food',
-    name_en: '',
-    calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0,
-    source: 'local',
-    isDeleted: true
-  };
-};
 
 // ─── DayStrip Component ───────────────────────────────────────────────────────
 interface DayStripProps {
@@ -120,6 +114,8 @@ export default function App() {
   const [isMealModalOpen, setIsMealModalOpen] = useState(false);
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [mealToDuplicate, setMealToDuplicate] = useState<Meal | null>(null);
+  const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState(false);
   const [isRecoveryMode, setIsRecoveryMode] = useState(false);
   const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
@@ -364,6 +360,54 @@ export default function App() {
     setEditingMeal(null);
     showToast('Meal saved successfully!', 'success');
   };
+  
+  const handleDuplicateMeal = async (meal: Meal, targetDateStr: string, targetTime: string) => {
+    if (!user) return;
+    
+    // Combine date and time in ISO format to avoid timezone issues
+    const targetDate = new Date(`${targetDateStr}T${targetTime}`);
+    
+    const mealPayload = {
+      name: meal.name,
+      time: targetTime,
+      created_at: targetDate.toISOString(),
+      user_id: user.id
+    };
+
+    const { data: insertedMeal, error: mealError } = await supabase
+      .from('meals')
+      .insert(mealPayload)
+      .select()
+      .single();
+
+    if (mealError) {
+      showToast(getFriendlyErrorMessage(mealError), 'error');
+      return;
+    }
+
+    if (meal.items && meal.items.length > 0) {
+      const itemsToInsert = meal.items.map(item => ({
+        meal_id: insertedMeal.id,
+        food_id: item.foodId,
+        grams: item.quantityGrams
+      }));
+
+      const { error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert);
+      
+      if (itemsError) {
+        // Rollback meal if items fail
+        await supabase.from('meals').delete().eq('id', insertedMeal.id);
+        showToast(getFriendlyErrorMessage(itemsError), 'error');
+        return;
+      }
+    }
+
+    // Navigation and feedback
+    setSelectedDate(targetDate);
+    setIsDuplicateModalOpen(false);
+    setMealToDuplicate(null);
+    showToast('Meal duplicated!', 'success');
+  };
 
   const handleDeleteMeal = async (id: string) => {
     if (!user) return;
@@ -383,6 +427,29 @@ export default function App() {
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
+  };
+
+  const handleExport = () => {
+    const success = downloadDayAsCSV(selectedDate, meals, foods);
+    if (!success) {
+      showToast('No data to export for this day', 'error');
+    }
+  };
+
+  const handleCopySummary = async () => {
+    const summary = generateDaySummaryText(selectedDate, meals, foods);
+    if (!summary) {
+      showToast('No data to summarize for this day', 'error');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(summary);
+      showToast('Summary copied to clipboard!', 'success');
+    } catch (err) {
+      console.error('Failed to copy summary:', err);
+      showToast('Failed to copy summary', 'error');
+    }
   };
 
   if (sessionLoading) {
@@ -428,6 +495,20 @@ export default function App() {
 
         <div className="absolute top-4 right-6 flex items-center gap-2">
           <button
+            onClick={handleCopySummary}
+            className="p-2 hover:bg-gray-100 rounded-full transition-colors text-subtle"
+            title="Copy Summary"
+          >
+            <FileText size={20} />
+          </button>
+          <button
+            onClick={handleExport}
+            className="p-2 hover:bg-gray-100 rounded-full transition-colors text-subtle"
+            title="Export CSV"
+          >
+            <Download size={20} />
+          </button>
+          <button
             onClick={() => setView(view === 'timeline' ? 'database' : 'timeline')}
             className="p-2 hover:bg-gray-100 rounded-full transition-colors text-subtle"
             title={view === 'timeline' ? "Database" : "Timeline"}
@@ -449,7 +530,21 @@ export default function App() {
         <div className="px-5 pt-8 pb-4">
           <div className="flex items-end justify-between mb-1.5">
             <span className="text-[30px] font-[800] tracking-tight text-ink leading-none">{dailyTotals.total_fiber.toFixed(1)}<span className="text-[16px] text-subtle font-semibold ml-1">/ 35g</span></span>
-            <span className="text-[11px] font-bold text-subtle uppercase tracking-widest">{Math.round(Math.min(dailyTotals.total_fiber / 35 * 100, 100))}%</span>
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={handleCopySummary}
+                className="p-2 -mr-1 text-subtle/40 hover:text-accent transition-colors"
+              >
+                <FileText size={18} />
+              </button>
+              <button 
+                onClick={handleExport}
+                className="p-2 -mr-2 text-subtle/40 hover:text-accent transition-colors"
+              >
+                <Download size={18} />
+              </button>
+              <span className="text-[11px] font-bold text-subtle uppercase tracking-widest">{Math.round(Math.min(dailyTotals.total_fiber / 35 * 100, 100))}%</span>
+            </div>
           </div>
           <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
             <div
@@ -503,7 +598,7 @@ export default function App() {
                   {/* Vertical Timeline Line */}
                   <div className="absolute left-[38px] top-6 bottom-32 w-[2px] bg-border/40" />
                   
-                  <div className="flex flex-col gap-4 relative">
+                  <div className="flex flex-col gap-2 relative">
                     {(() => {
                       const elements: React.ReactNode[] = [];
                       const now = new Date();
@@ -550,6 +645,7 @@ export default function App() {
                               onClick={() => setSelectedMealId(sel => sel === String(meal.id) ? null : String(meal.id))}
                               onEdit={() => { setEditingMeal(meal); setIsMealModalOpen(true); }}
                               onDelete={() => handleDeleteMeal(String(meal.id))}
+                              onDuplicate={() => { setMealToDuplicate(meal); setIsDuplicateModalOpen(true); }}
                             />
                           </React.Fragment>
                         );
@@ -597,7 +693,7 @@ export default function App() {
                   {/* Vertical Timeline Line */}
                   <div className="absolute left-[88px] top-6 bottom-32 w-[2px] bg-border/30" />
 
-                  <div className="flex flex-col gap-6 relative">
+                  <div className="flex flex-col gap-2 relative">
                     {(() => {
                       const elements: React.ReactNode[] = [];
                       const now = new Date();
@@ -611,7 +707,7 @@ export default function App() {
                         // Add "Now" indicator if this is the first meal in the future
                         if (!indicatorAdded && isToday(selectedDate) && mealMin > nowMin) {
                           elements.push(
-                            <div key="now-indicator-desktop" ref={nowIndicatorRef} className="py-4 flex items-center gap-4">
+                            <div key="now-indicator-desktop" ref={nowIndicatorRef} className="py-2 flex items-center gap-4">
                               <div className="w-3 h-3 rounded-full bg-accent animate-pulse ml-[35px] relative z-10 border-4 border-bg" />
                               <span className="text-[11px] font-bold text-accent uppercase tracking-widest">Current Time</span>
                               <div className="h-px bg-accent/20 flex-1 pr-12" />
@@ -656,7 +752,7 @@ export default function App() {
                       // If "Now" is after all meals
                       if (!indicatorAdded && isToday(selectedDate)) {
                         elements.push(
-                          <div key="now-indicator-bottom-desktop" ref={nowIndicatorRef} className="py-4 flex items-center gap-4">
+                          <div key="now-indicator-bottom-desktop" ref={nowIndicatorRef} className="py-2 flex items-center gap-4">
                             <div className="w-3 h-3 rounded-full bg-accent animate-pulse ml-[35px] relative z-10 border-4 border-bg" />
                             <span className="text-[11px] font-bold text-accent uppercase tracking-widest">Current Time</span>
                             <div className="h-px bg-accent/20 flex-1 pr-12" />
@@ -689,17 +785,56 @@ export default function App() {
 
                 return (
                   <div className="space-y-8">
-                    <div className="bg-gray-50 p-4 rounded-xl border border-border">
-                      <h3 className="font-bold text-lg">{meal.name}</h3>
-                      <p className="text-xs text-subtle">{meal.time}</p>
+                    <div className="bg-gray-50 p-4 rounded-xl border border-border flex justify-between items-baseline group relative">
+                      <div>
+                        <h3 className="font-bold text-lg">{meal.name}</h3>
+                        <p className="text-xs text-subtle font-mono">{meal.time}</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => { setEditingMeal(meal); setIsMealModalOpen(true); }}
+                          className="p-2 text-subtle hover:text-ink hover:bg-black/5 rounded-lg transition-all active:scale-90"
+                          title="Edit"
+                        >
+                          <Edit2 size={18} />
+                        </button>
+                        <button
+                          onClick={() => { setMealToDuplicate(meal); setIsDuplicateModalOpen(true); }}
+                          className="p-2 text-subtle hover:text-ink hover:bg-black/5 rounded-lg transition-all active:scale-90"
+                          title="Duplicate"
+                        >
+                          <Copy size={18} />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteMeal(meal.id)}
+                          className="p-2 text-subtle hover:text-red-500 hover:bg-red-50 rounded-lg transition-all active:scale-90"
+                          title="Delete"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4">
-                      <StatCard small label="Calories" value={Math.round(totals.calories).toLocaleString()} unit="" />
-                      <StatCard small label="Protein" value={Math.round(totals.protein)} unit="g" />
-                      <StatCard small label="GL" value={Math.round(totals.gl)} unit="" highlight />
-                      <StatCard small label="Carbs" value={Math.round(totals.carbs)} unit="g" />
-                      <StatCard small label="Fat" value={Math.round(totals.fat)} unit="g" />
+                    <div className="bg-gray-50 p-4 rounded-xl border border-border flex justify-between items-center">
+                      <div className="flex gap-6">
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-ink">{Math.round(totals.protein)}g</div>
+                          <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Protein</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-ink">{Math.round(totals.carbs)}g</div>
+                          <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Carbs</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-ink">{Math.round(totals.fat)}g</div>
+                          <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fat</div>
+                        </div>
+                      </div>
+                      <div className="h-10 w-px bg-gray-200" />
+                      <div className="text-center px-2">
+                        <div className="text-xl font-bold text-ink">{Math.round(totals.calories)}</div>
+                        <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest text-center">kcal</div>
+                      </div>
                     </div>
 
                     <div className="bg-[#F1F5F9] p-4 rounded-xl space-y-2">
@@ -723,7 +858,8 @@ export default function App() {
                           <div className="flex-1 min-w-0 pr-4">
                             <h4 className={cn("text-[14px]", !item.food.isDeleted ? "font-semibold" : "text-red-500 italic")}>
                               {item.food.name_hu}
-                              {item.food.name_en && <span className="text-xs text-gray-500 ml-1 font-normal opacity-80">({item.food.name_en})</span>}
+                              {item.food.brand && <span className="text-[11px] text-gray-400 font-normal ml-1">({item.food.brand})</span>}
+                              {item.food.name_en && <span className="text-xs text-gray-500 ml-1 font-normal opacity-70">({item.food.name_en})</span>}
                               {item.food.gi != null && <span className={cn("ml-2 font-bold", item.food.gi < 56 ? "text-green-600" : item.food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {item.food.gi})</span>}
                             </h4>
                             <div className="text-[13px] text-gray-500 mt-0.5">
@@ -824,6 +960,14 @@ export default function App() {
             editingMeal={editingMeal}
             foods={foods}
             existingMeals={meals}
+          />
+        )}
+        {isDuplicateModalOpen && mealToDuplicate && (
+          <DuplicateMealModal
+            isOpen={isDuplicateModalOpen}
+            onClose={() => setIsDuplicateModalOpen(false)}
+            meal={mealToDuplicate}
+            onDuplicate={handleDuplicateMeal}
           />
         )}
       </AnimatePresence>
@@ -1090,6 +1234,104 @@ function StatCard({ label, value, unit, highlight = false, small = false }: Stat
   );
 }
 
+interface DuplicateMealModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  meal: Meal;
+  onDuplicate: (meal: Meal, date: string, time: string) => Promise<void>;
+}
+
+function DuplicateMealModal({ isOpen, onClose, meal, onDuplicate }: DuplicateMealModalProps) {
+  const [targetDate, setTargetDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [targetTime, setTargetTime] = useState(meal.time);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [onClose]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+      />
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.9, opacity: 0, y: 20 }}
+        className="relative w-full max-w-sm bg-white rounded-[32px] shadow-2xl p-8 space-y-8"
+      >
+        <div className="text-center space-y-2">
+          <div className="w-16 h-16 bg-accent/10 text-accent rounded-3xl flex items-center justify-center mx-auto mb-4">
+            <Copy size={32} strokeWidth={2.5} />
+          </div>
+          <h3 className="text-[24px] font-[800] tracking-[-1px] leading-tight">Duplicate Meal</h3>
+          <p className="text-subtle text-[14px]">Copying "{meal.name}"</p>
+        </div>
+
+        <div className="space-y-6">
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Target Date</label>
+            <div className="relative">
+              <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
+              <input
+                type="date"
+                value={targetDate}
+                onChange={e => setTargetDate(e.target.value)}
+                className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-ink"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Time</label>
+            <div className="relative">
+              <Clock className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
+              <input
+                type="time"
+                value={targetTime}
+                onChange={e => setTargetTime(e.target.value)}
+                className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-ink"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 pt-2">
+          <button
+            onClick={async () => {
+              setIsSaving(true);
+              await onDuplicate(meal, targetDate, targetTime);
+              setIsSaving(false);
+            }}
+            disabled={isSaving}
+            className="w-full bg-accent text-white py-4 rounded-2xl font-bold text-[14px] uppercase tracking-[0.1em] hover:bg-green-700 transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {isSaving ? <Loader2 className="animate-spin" size={20} /> : 'Duplicate Meal'}
+          </button>
+          <button
+            onClick={onClose}
+            disabled={isSaving}
+            className="w-full bg-gray-100 text-ink py-4 rounded-2xl font-bold text-[14px] uppercase tracking-[0.1em] hover:bg-gray-200 transition-all active:scale-[0.98]"
+          >
+            Cancel
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 // ─── Mobile expandable card ───────────────────────────────────────────────────
 interface MealCardProps {
   meal: Meal;
@@ -1098,9 +1340,10 @@ interface MealCardProps {
   onClick: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onDuplicate: () => void;
 }
 
-function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealCardProps) {
+function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete, onDuplicate }: MealCardProps) {
   const now = new Date();
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   const [mealH, mealM] = meal.time.split(':').map(Number);
@@ -1119,27 +1362,27 @@ function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealCa
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       className={cn(
-        'rounded-2xl border transition-all duration-200 overflow-hidden',
+        'rounded-xl border transition-all duration-200 overflow-hidden',
         isSelected
-          ? 'border-accent bg-white shadow-lg ring-2 ring-accent/20'
-          : 'border-border bg-white shadow-sm hover:shadow-md active:scale-[0.99]'
+          ? 'border-accent bg-white shadow-md ring-2 ring-accent/20'
+          : 'border-border bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-md active:scale-[0.99]'
       )}
     >
       {/* Card header – always visible */}
       <button
-        className="w-full text-left p-4"
+        className="w-full text-left p-3"
         onClick={onClick}
       >
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <h3 className="text-[17px] font-bold text-ink leading-tight truncate">
-              <span className="text-xs font-normal text-subtle mr-2 font-mono uppercase tracking-tight">{meal.time}</span>
+            <h3 className="text-[16px] font-bold text-ink leading-tight truncate">
+              <span className="text-[11px] font-medium text-subtle/60 mr-2 font-mono uppercase transition-colors">{meal.time}</span>
               {meal.name}
             </h3>
             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
               <span className="text-[11px] font-bold bg-[#DCFCE7] text-[#166534] px-2 py-0.5 rounded-full">{totals.total_fiber.toFixed(1)}g fiber</span>
               <span className={cn("text-[11px] font-bold px-2 py-0.5 rounded-full bg-gray-100", getGlycemicLoadLabel(totals.gl).color)}>GL: {Math.round(totals.gl)}</span>
-              <span className="text-[11px] text-subtle">{Math.round(totals.calories)} kcal</span>
+              <span className="text-[11px] text-subtle">{Math.round(totals.calories)} kcal • {Math.round(totals.protein)}P {Math.round(totals.carbs)}C {Math.round(totals.fat)}F</span>
               {isNow && (
                 <span className="text-[10px] font-bold bg-accent text-white px-2 py-0.5 rounded-full">Now</span>
               )}
@@ -1164,19 +1407,32 @@ function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealCa
           >
             <div className="border-t border-border px-4 pb-4 pt-3 space-y-4">
               {/* Macros grid */}
-              <div className="grid grid-cols-4 gap-2 bg-gray-50 rounded-xl p-3">
-                {[
-                  { label: 'Protein', val: Math.round(totals.protein) + 'g' },
-                  { label: 'Carbs', val: Math.round(totals.carbs) + 'g' },
-                  { label: 'Fat', val: Math.round(totals.fat) + 'g' },
-                  { label: 'Fiber', val: totals.total_fiber.toFixed(1) + 'g' },
-                  { label: 'GL', val: Math.round(totals.gl) },
-                ].map(m => (
-                  <div key={m.label} className="text-center">
-                    <div className="text-[15px] font-[800] text-ink">{m.val}</div>
-                    <div className="text-[9px] text-subtle uppercase tracking-widest font-bold">{m.label}</div>
+              <div className="flex justify-between items-center bg-gray-50 rounded-xl p-3 px-4">
+                <div className="flex gap-4">
+                  <div className="text-center">
+                    <div className="text-[14px] font-[800] text-ink">{Math.round(totals.protein)}g</div>
+                    <div className="text-[9px] text-subtle uppercase tracking-widest font-bold">Protein</div>
                   </div>
-                ))}
+                  <div className="text-center">
+                    <div className="text-[14px] font-[800] text-ink">{Math.round(totals.carbs)}g</div>
+                    <div className="text-[9px] text-subtle uppercase tracking-widest font-bold">Carbs</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-[14px] font-[800] text-ink">{Math.round(totals.fat)}g</div>
+                    <div className="text-[9px] text-subtle uppercase tracking-widest font-bold">Fat</div>
+                  </div>
+                </div>
+                <div className="h-8 w-px bg-gray-200" />
+                <div className="flex gap-4">
+                  <div className="text-center">
+                    <div className="text-[14px] font-[800] text-accent">{totals.total_fiber.toFixed(1)}g</div>
+                    <div className="text-[9px] text-subtle uppercase tracking-widest font-bold">Fiber</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-[14px] font-[800] text-ink">{Math.round(totals.gl)}</div>
+                    <div className="text-[9px] text-subtle uppercase tracking-widest font-bold">GL</div>
+                  </div>
+                </div>
               </div>
 
               {/* Food list */}
@@ -1186,6 +1442,7 @@ function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealCa
                     <div className="flex items-center gap-2 mb-1">
                       <span className={cn('text-[13px] font-semibold', item.food.isDeleted && 'text-red-400 italic')}>
                         {item.food.name_hu}
+                        {item.food.brand && <span className="text-[11px] text-gray-400 font-normal ml-1">({item.food.brand})</span>}
                         {item.food.name_en && (
                           <span className="text-gray-500 font-normal ml-1 text-xs">({item.food.name_en})</span>
                         )}
@@ -1212,6 +1469,12 @@ function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealCa
                   <Edit2 size={14} /> Edit
                 </button>
                 <button
+                  onClick={(e) => { e.stopPropagation(); onDuplicate(); }}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-gray-100 hover:bg-gray-200 rounded-xl text-[12px] font-bold transition-all active:scale-95"
+                >
+                  <Copy size={14} /> Duplicate
+                </button>
+                <button
                   onClick={(e) => { e.stopPropagation(); onDelete(); }}
                   className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-red-50 hover:bg-red-100 text-red-500 rounded-xl text-[12px] font-bold transition-all active:scale-95"
                 >
@@ -1235,9 +1498,10 @@ interface MealBlockProps {
   onClick: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onDuplicate: () => void;
 }
 
-function MealBlock({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealBlockProps) {
+function MealBlock({ meal, foods, isSelected, onClick, onEdit, onDelete, onDuplicate }: MealBlockProps) {
   const mealItems = (meal.items || []).map(item => ({
     food: getFoodOrUnknown(foods, item.foodId),
     quantity: item.quantityGrams
@@ -1250,17 +1514,17 @@ function MealBlock({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealB
       initial={{ opacity: 0, x: 20 }}
       animate={{ opacity: 1, x: 0 }}
       className={cn(
-        "bg-card border rounded-lg p-4 transition-all duration-200 cursor-pointer group w-full max-w-md",
+        "bg-card border rounded-md p-3 transition-all duration-200 cursor-pointer group w-full max-w-md",
         isSelected
-          ? "border-accent ring-2 ring-accent/20 shadow-md bg-accent/5 scale-[1.02]"
-          : "border-border border-l-4 border-l-accent shadow-[0_2px_4px_rgba(0,0,0,0.02)] hover:shadow-md hover:bg-gray-50/80 hover:border-l-accent/80 hover:scale-[1.01] active:scale-[0.99]"
+          ? "border-accent ring-2 ring-accent/20 shadow-md bg-accent/5 scale-[1.01]"
+          : "border-border border-l-4 border-l-accent shadow-[0_1px_2px_rgba(0,0,0,0.02)] hover:shadow-md hover:bg-gray-50/80 hover:border-l-accent/80 hover:scale-[1.005] active:scale-[0.995]"
       )}
       onClick={onClick}
     >
       <div className="flex justify-between items-start">
         <div>
-          <h3 className="text-[18px] font-bold">
-            <span className="text-xs font-normal text-subtle mr-3 font-mono uppercase tracking-tight">{meal.time}</span>
+          <h3 className="text-[16px] font-bold">
+            <span className="text-[11px] font-medium text-subtle/60 mr-3 font-mono uppercase transition-colors">{meal.time}</span>
             {meal.name}
           </h3>
           <div className="flex items-center gap-2 mt-2">
@@ -1270,7 +1534,7 @@ function MealBlock({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealB
             <div className={cn("inline-block text-[12px] font-semibold px-2 py-0.5 rounded bg-gray-100", getGlycemicLoadLabel(totals.gl).color)}>
               GL: {Math.round(totals.gl)}
             </div>
-            <div className="text-[12px] text-subtle ml-2">{Math.round(totals.calories)} kcal</div>
+            <div className="text-[12px] text-subtle ml-2">{Math.round(totals.calories)} kcal • {Math.round(totals.protein)}P {Math.round(totals.carbs)}C {Math.round(totals.fat)}F</div>
           </div>
         </div>
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1280,6 +1544,13 @@ function MealBlock({ meal, foods, isSelected, onClick, onEdit, onDelete }: MealB
             title="Edit Meal"
           >
             <Edit2 size={16} />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDuplicate(); }}
+            className="p-1.5 text-subtle hover:text-ink hover:bg-black/5 rounded-md transition-all active:scale-90"
+            title="Duplicate Meal"
+          >
+            <Copy size={16} />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); onDelete(); }}
@@ -1385,7 +1656,11 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
 
   // Food searching
   const filteredFoods = foods
-    .filter(f => (f.name_hu || '').toLowerCase().includes(search.toLowerCase()))
+    .filter(f => {
+      const query = search.toLowerCase();
+      return (f.name_hu || '').toLowerCase().includes(query) || 
+             (f.brand && f.brand.toLowerCase().includes(query));
+    })
     .slice(0, 50);
 
   console.log('SEARCH INPUT:', search);
@@ -1502,14 +1777,18 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                         <div className="flex items-center gap-2 mb-1">
                           <span className="font-medium text-sm text-ink">
                             {food.name_hu}
+                            {food.brand && <span className="text-[11px] text-gray-400 font-normal ml-1">({food.brand})</span>}
                             {food.gi != null && <span className={cn("ml-2 font-bold", food.gi < 56 ? "text-green-600" : food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {food.gi})</span>}
                           </span>
                         </div>
-                        <div className="flex items-center gap-2 text-xs font-semibold text-gray-400">
-                          <span className="bg-gray-100 px-2 py-0.5 rounded">{food.total_fiber}g <span className="font-normal opacity-70">/ 100g</span></span>
-                          {food.gi != null && food.carbs != null && (
-                            <span className="bg-gray-100 px-2 py-0.5 rounded">GL: {Math.round((food.gi * food.carbs * 100) / 10000)} <span className="font-normal opacity-70">/ 100g</span></span>
-                          )}
+                        <div className="flex flex-col items-end gap-1 text-xs font-semibold text-gray-400">
+                          <span className="bg-gray-100 px-2 py-0.5 rounded text-ink">{Math.round(food.calories)} kcal • {Math.round(food.protein)}P {Math.round(food.carbs)}C {Math.round(food.fat)}F <span className="font-normal opacity-70">/ 100g</span></span>
+                          <div className="flex gap-2">
+                            <span className="bg-gray-50 px-2 py-0.5 rounded">{food.total_fiber}g fiber <span className="font-normal opacity-70">/ 100g</span></span>
+                            {food.gi != null && food.carbs != null && (
+                              <span className="bg-accent/5 text-accent px-2 py-0.5 rounded">GL: {Math.round((food.gi * food.carbs * 100) / 10000)} <span className="font-normal opacity-70">/ 100g</span></span>
+                            )}
+                          </div>
                         </div>
                       </button>
                     ))}
@@ -1532,11 +1811,12 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                     <div>
                       <div className={cn("font-medium text-sm text-ink", food.isDeleted && 'text-red-500 italic')}>
                         {food.name_hu}
+                        {food.brand && <span className="text-[11px] text-gray-400 font-normal ml-1">({food.brand})</span>}
                         {food.name_en && <span className="text-xs text-gray-500 ml-1 font-normal">({food.name_en})</span>}
                         {food.gi != null && <span className={cn("ml-2 font-bold", food.gi < 56 ? "text-green-600" : food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {food.gi})</span>}
                       </div>
-                      <div className="text-xs text-gray-500 mt-0.5">
-                        {food.calories} kcal / 100g
+                      <div className="text-xs text-gray-400 font-medium mt-0.5">
+                        {Math.round((food.calories * (Number(item.quantityGrams) || 0)) / 100)} kcal • {Math.round((food.protein * (Number(item.quantityGrams) || 0)) / 100)}P {Math.round((food.carbs * (Number(item.quantityGrams) || 0)) / 100)}C {Math.round((food.fat * (Number(item.quantityGrams) || 0)) / 100)}F
                       </div>
                       <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">
                         <span className="text-green-600">{(food.total_fiber * Number(item.quantityGrams) / 100).toFixed(1)}g</span> Fiber
@@ -1577,7 +1857,7 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
             </div>
           )}
           <div className="flex justify-between items-center">
-            <div className="flex gap-4">
+            <div className="flex gap-4 items-center">
               <div className="text-center">
                 <div className="text-lg font-bold text-green-600">{mealTotals.total_fiber.toFixed(1)}g</div>
                 <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fiber</div>
@@ -1585,6 +1865,11 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
               <div className="text-center">
                 <div className="text-lg font-bold text-accent">{Math.round(mealTotals.gl)}</div>
                 <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">GL</div>
+              </div>
+              <div className="h-8 w-px bg-gray-200 mx-1" />
+              <div className="text-[11px] text-subtle leading-tight">
+                <div className="font-bold text-ink">{Math.round(mealTotals.calories)} kcal</div>
+                <div>{Math.round(mealTotals.protein)}P {Math.round(mealTotals.carbs)}C {Math.round(mealTotals.fat)}F</div>
               </div>
             </div>
             <button
@@ -1614,10 +1899,14 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
   const [search, setSearch] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   const [newFood, setNewFood] = useState<Omit<Food, 'id' | 'source'>>({
-    name_hu: '', name_en: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gi: undefined
+    name_hu: '', name_en: '', brand: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gi: undefined
   });
 
-  const filteredFoods = foods.filter(f => (f.name_hu || '').toLowerCase().includes(search.toLowerCase()));
+  const filteredFoods = foods.filter(f => {
+    const query = search.toLowerCase();
+    return (f.name_hu || '').toLowerCase().includes(query) || 
+           (f.brand && f.brand.toLowerCase().includes(query));
+  });
 
   const handleAddFood = () => {
     const food: Food = {
@@ -1633,7 +1922,7 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
     localStorage.setItem('fiber_track_local_foods', JSON.stringify(local));
 
     setIsAdding(false);
-    setNewFood({ name_hu: '', name_en: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gi: undefined });
+    setNewFood({ name_hu: '', name_en: '', brand: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gi: undefined });
   };
 
   const handleDeleteFood = (id: string) => {
@@ -1712,6 +2001,7 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
                 <tr key={food.id} className="border-b transition-colors hover:bg-gray-50/50 group">
                   <td className="py-4 font-medium">
                     {food.name_hu}
+                    {food.brand && <span className="text-[11px] text-gray-400 font-normal ml-1">({food.brand})</span>}
                     {food.gi != null && <span className={cn("ml-2 font-bold", food.gi < 56 ? "text-green-600" : food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {food.gi})</span>}
                     {food.name_en && <span className="block text-xs text-gray-500 mt-1 font-normal opacity-70">({food.name_en})</span>}
                   </td>
@@ -1749,7 +2039,8 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Name</label>
                   <input type="text" placeholder="Név (HU)" value={newFood.name_hu} onChange={e => setNewFood({ ...newFood, name_hu: e.target.value })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500 mb-2" />
-                  <input type="text" placeholder="Name (EN) - Opcionális" value={newFood.name_en} onChange={e => setNewFood({ ...newFood, name_en: e.target.value })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500" />
+                  <input type="text" placeholder="Name (EN) - Opcionális" value={newFood.name_en} onChange={e => setNewFood({ ...newFood, name_en: e.target.value })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500 mb-2" />
+                  <input type="text" placeholder="Brand / Gyártó - Opcionális" value={newFood.brand} onChange={e => setNewFood({ ...newFood, brand: e.target.value })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500" />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1">

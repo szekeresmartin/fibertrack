@@ -37,14 +37,18 @@ export function getGlycemicLoadLabel(gl: number): { label: string; color: string
   return { label: 'High', color: 'text-red-500' };
 }
 
+export function calculateItemGL(food: Food, quantity: number): number {
+  const gi = food.gi || 0;
+  const carbs = food.carbs || 0;
+  // Formula: GL = (gi * carbs * quantityGrams) / 10000
+  return (gi * carbs * quantity) / 10000;
+}
+
 export function calculateMealTotals(items: { food: Food; quantity: number }[]) {
   return items.reduce(
     (acc, item) => {
       const factor = item.quantity / 100;
-      const gi = item.food.gi || 0;
-      const carbs = item.food.carbs || 0;
-      // Formula: GL = (gi * carbs * quantityGrams) / 10000
-      const itemGL = (gi * carbs * item.quantity) / 10000;
+      const itemGL = calculateItemGL(item.food, item.quantity);
 
       return {
         calories: acc.calories + item.food.calories * factor,
@@ -69,3 +73,15 @@ export function calculateMealTotals(items: { food: Food; quantity: number }[]) {
     }
   );
 }
+
+export const getFoodOrUnknown = (foods: Food[], id: string): Food => {
+  return foods.find(f => f.id === id) || {
+    id,
+    name_hu: 'Unknown',
+    name_en: '',
+    calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0,
+    gi: 0,
+    source: 'local',
+    isDeleted: true
+  };
+};

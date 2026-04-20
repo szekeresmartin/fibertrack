@@ -32,6 +32,7 @@ interface NutrientSources {
 interface NutritionResult {
   nameHu: string;
   nameEn: string;
+  brand: string | null;
   // Macros
   calories: number | null;
   protein: number | null;
@@ -74,7 +75,7 @@ async function lookupCache(query: string): Promise<NutritionResult | null> {
   const { data, error } = await supabase
     .from('foods')
     .select(`
-      name_hu, name_en,
+      name_hu, name_en, brand,
       calories, protein, carbs, fat,
       total_fiber, soluble_fiber, insoluble_fiber, gi,
       sugar, sodium, cholesterol, calcium, iron, potassium, magnesium
@@ -88,6 +89,7 @@ async function lookupCache(query: string): Promise<NutritionResult | null> {
   return {
     nameHu: data.name_hu ?? q,
     nameEn: data.name_en ?? q,
+    brand: data.brand ?? null,
     calories: r1(data.calories),
     protein: r1(data.protein),
     fat: r1(data.fat),
@@ -177,6 +179,7 @@ async function lookupEdamam(query: string): Promise<NutritionResult> {
   return {
     nameHu: query.trim(),
     nameEn: food.label ?? query.trim(),
+    brand: null,
     calories:        nutrientValues.calories        ?? null,
     protein:         nutrientValues.protein         ?? null,
     fat:             nutrientValues.fat             ?? null,
@@ -258,6 +261,7 @@ export default function AdminFoodGenerator() {
   const [result, setResult] = useState<NutritionResult | null>(null);
   const [editNameHu, setEditNameHu] = useState('');
   const [editNameEn, setEditNameEn] = useState('');
+  const [editBrand, setEditBrand] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -283,6 +287,7 @@ export default function AdminFoodGenerator() {
         setResult(cached);
         setEditNameHu(cached.nameHu);
         setEditNameEn(cached.nameEn);
+        setEditBrand(cached.brand ?? '');
         return;
       }
 
@@ -295,6 +300,7 @@ export default function AdminFoodGenerator() {
       setResult(edamamResult);
       setEditNameHu(edamamResult.nameHu);
       setEditNameEn(edamamResult.nameEn);
+      setEditBrand(edamamResult.brand ?? '');
     } catch (err: any) {
       setError(err?.message ?? 'Something went wrong.');
     } finally {
@@ -313,6 +319,7 @@ export default function AdminFoodGenerator() {
     const { error: dbError } = await supabase.from('foods').insert({
       name_hu: editNameHu.trim() || result.nameHu,
       name_en: editNameEn.trim() || result.nameEn,
+      brand: editBrand.trim() || null,
       // Nutrients
       calories:        result.calories,
       protein:         result.protein,
@@ -474,6 +481,15 @@ export default function AdminFoodGenerator() {
                   style={s.input}
                   value={editNameEn}
                   onChange={(e) => setEditNameEn(e.target.value)}
+                />
+              </div>
+              <div style={s.editField}>
+                <label style={s.editLabel}>Brand</label>
+                <input
+                  style={s.input}
+                  placeholder="e.g. Lidl, Tesco"
+                  value={editBrand}
+                  onChange={(e) => setEditBrand(e.target.value)}
                 />
               </div>
             </div>
