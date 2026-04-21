@@ -9,7 +9,7 @@ const OPENAI_KEY: string = (import.meta as any).env?.VITE_OPENAI_API_KEY ?? '';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type FieldSource = 'edamam' | 'ai';
+type FieldSource = 'edamam' | 'ai' | 'manual';
 
 interface NutrientSources {
   calories?: FieldSource;
@@ -53,7 +53,7 @@ interface NutritionResult {
   magnesium: number | null;
   // Meta
   sources: NutrientSources;
-  source: 'cache' | 'edamam';
+  source: 'cache' | 'edamam' | 'manual';
   usedOpenAI: boolean;
 }
 
@@ -266,10 +266,61 @@ export default function AdminFoodGenerator() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
+  const [mode, setMode] = useState<'auto' | 'manual'>('auto');
 
   const showToast = (text: string, ok: boolean) => {
     setToast({ text, ok });
     setTimeout(() => setToast(null), ok ? 3000 : 5000);
+  };
+
+  const initManualEntry = () => {
+    const emptyResult: NutritionResult = {
+      nameHu: '',
+      nameEn: '',
+      brand: null,
+      calories: 0,
+      protein: 0,
+      fat: 0,
+      carbs: 0,
+      total_fiber: 0,
+      soluble_fiber: 0,
+      insoluble_fiber: 0,
+      gi: 0,
+      sugar: 0,
+      sodium: 0,
+      cholesterol: 0,
+      calcium: 0,
+      iron: 0,
+      potassium: 0,
+      magnesium: 0,
+      sources: {
+        calories: 'manual',
+        protein: 'manual',
+        fat: 'manual',
+        carbs: 'manual',
+        total_fiber: 'manual',
+        soluble_fiber: 'manual',
+        insoluble_fiber: 'manual',
+        gi: 'manual',
+      },
+      source: 'manual',
+      usedOpenAI: false,
+    };
+    setResult(emptyResult);
+    setEditNameHu('');
+    setEditNameEn('');
+    setEditBrand('');
+    setError(null);
+  };
+
+  const handleModeChange = (newMode: 'auto' | 'manual') => {
+    setMode(newMode);
+    if (newMode === 'manual') {
+      initManualEntry();
+    } else {
+      setResult(null);
+      setQuery('');
+    }
   };
 
   const handleGenerate = async () => {
@@ -310,14 +361,35 @@ export default function AdminFoodGenerator() {
 
   const handleSave = async () => {
     if (!result) return;
-    setSaving(true);
 
+    // Validation
+    const name = editNameHu.trim() || (result.source !== 'manual' ? result.nameHu : '');
+    if (!name) {
+      showToast('Hungarian name is required', false);
+      return;
+    }
+
+    // Verify all numeric values are >= 0
+    const nutrients = [
+      'calories', 'protein', 'carbs', 'fat', 'total_fiber', 
+      'soluble_fiber', 'insoluble_fiber', 'gi', 'sugar', 
+      'sodium', 'cholesterol', 'calcium', 'iron', 'potassium', 'magnesium'
+    ];
+    for (const key of nutrients) {
+      const val = result[key as keyof NutritionResult] as number | null;
+      if (val !== null && val < 0) {
+        showToast(`${key} must be 0 or greater`, false);
+        return;
+      }
+    }
+
+    setSaving(true);
     console.log("FINAL RESULT", result);
 
     const { sources: src } = result;
 
     const { error: dbError } = await supabase.from('foods').insert({
-      name_hu: editNameHu.trim() || result.nameHu,
+      name_hu: name,
       name_en: editNameEn.trim() || result.nameEn,
       brand: editBrand.trim() || null,
       // Nutrients
@@ -366,31 +438,55 @@ export default function AdminFoodGenerator() {
         <p style={s.subtitle}>Local DB cache → Edamam → OpenAI (fiber)</p>
       </div>
 
-      {/* Input */}
-      <div style={s.inputRow}>
-        <input
-          style={s.input}
-          type="text"
-          placeholder="e.g. chicken breast 200g"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && !loading && handleGenerate()}
-          disabled={loading}
-          autoFocus
-        />
+      {/* Mode Toggle */}
+      <div style={s.toggleWrapper}>
         <button
           style={{
-            ...s.btn,
-            ...s.btnPrimary,
-            opacity: loading || !query.trim() ? 0.55 : 1,
-            cursor: loading || !query.trim() ? 'not-allowed' : 'pointer',
+            ...s.toggleBtn,
+            ...(mode === 'auto' ? s.toggleBtnActive : {}),
           }}
-          onClick={handleGenerate}
-          disabled={loading || !query.trim()}
+          onClick={() => handleModeChange('auto')}
         >
-          {loading ? 'Looking up…' : 'Generate'}
+          Auto (Edamam)
+        </button>
+        <button
+          style={{
+            ...s.toggleBtn,
+            ...(mode === 'manual' ? s.toggleBtnActive : {}),
+          }}
+          onClick={() => handleModeChange('manual')}
+        >
+          Manual
         </button>
       </div>
+
+      {/* Input */}
+      {mode === 'auto' && (
+        <div style={s.inputRow}>
+          <input
+            style={s.input}
+            type="text"
+            placeholder="e.g. chicken breast 200g"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && !loading && handleGenerate()}
+            disabled={loading}
+            autoFocus
+          />
+          <button
+            style={{
+              ...s.btn,
+              ...s.btnPrimary,
+              opacity: loading || !query.trim() ? 0.55 : 1,
+              cursor: loading || !query.trim() ? 'not-allowed' : 'pointer',
+            }}
+            onClick={handleGenerate}
+            disabled={loading || !query.trim()}
+          >
+            {loading ? 'Looking up…' : 'Generate'}
+          </button>
+        </div>
+      )}
 
       {/* Error */}
       {error && <div style={s.errorBox}>⚠️ {error}</div>}
@@ -400,15 +496,28 @@ export default function AdminFoodGenerator() {
         <div style={s.resultCard}>
           {/* Meta row */}
           <div style={s.resultMeta}>
-            <span style={result.source === 'cache' ? s.badgeCache : s.badgeEdamam}>
-              {result.source === 'cache' ? '✓ From database' : '⚡ Edamam API'}
-            </span>
+            {result.source === 'cache' && (
+              <span style={s.badgeCache}>✓ From database</span>
+            )}
+            {result.source === 'edamam' && (
+              <span style={s.badgeEdamam}>⚡ Edamam API</span>
+            )}
+            {result.source === 'manual' && (
+              <span style={s.badgeManual}>✍️ Manual Entry</span>
+            )}
             {result.usedOpenAI && (
               <span style={s.badgeAI}>+ AI estimated fiber</span>
             )}
-            <span style={s.resultName}>{result.nameHu}</span>
-            {result.nameEn && result.nameEn !== result.nameHu && (
-              <span style={s.resultNameEn}>{result.nameEn}</span>
+            {result.source !== 'manual' && (
+              <>
+                <span style={s.resultName}>{result.nameHu}</span>
+                {result.nameEn && result.nameEn !== result.nameHu && (
+                  <span style={s.resultNameEn}>{result.nameEn}</span>
+                )}
+              </>
+            )}
+            {result.source === 'manual' && (
+              <span style={s.resultName}>New Item</span>
             )}
           </div>
 
@@ -433,7 +542,8 @@ export default function AdminFoodGenerator() {
             ]
               .filter((field) => 
                 result[field.key as keyof NutritionResult] != null || 
-                ['gi', 'soluble_fiber', 'insoluble_fiber'].includes(field.key)
+                ['gi', 'soluble_fiber', 'insoluble_fiber'].includes(field.key) ||
+                mode === 'manual'
               )
               .map((field) => {
                 const k = field.key as keyof NutritionResult;
@@ -465,12 +575,13 @@ export default function AdminFoodGenerator() {
           </div>
 
           {/* Edit Names */}
-          {result.source === 'edamam' && (
+          {(result.source === 'edamam' || result.source === 'manual') && (
             <div style={s.editNamesWrapper}>
               <div style={s.editField}>
-                <label style={s.editLabel}>Hungarian name</label>
+                <label style={s.editLabel}>Hungarian name (required)</label>
                 <input
                   style={s.input}
+                  placeholder="e.g. Alma"
                   value={editNameHu}
                   onChange={(e) => setEditNameHu(e.target.value)}
                 />
@@ -497,7 +608,7 @@ export default function AdminFoodGenerator() {
 
           {/* Actions */}
           <div style={s.actionRow}>
-            {result.source === 'edamam' && (
+            {(result.source === 'edamam' || result.source === 'manual') && (
               <button
                 style={{
                   ...s.btn,
@@ -511,13 +622,15 @@ export default function AdminFoodGenerator() {
                 {saving ? 'Saving…' : 'Save to database'}
               </button>
             )}
-            <button
-              style={{ ...s.btn, ...s.btnGhost }}
-              onClick={handleGenerate}
-              disabled={loading}
-            >
-              Regenerate
-            </button>
+            {mode === 'auto' && (
+              <button
+                style={{ ...s.btn, ...s.btnGhost }}
+                onClick={handleGenerate}
+                disabled={loading}
+              >
+                Regenerate
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -577,6 +690,31 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 13,
     color: '#555555',
     margin: 0,
+  },
+  toggleWrapper: {
+    display: 'flex',
+    background: '#f1f1f1',
+    padding: 4,
+    borderRadius: 8,
+    marginBottom: 20,
+    gap: 4,
+  },
+  toggleBtn: {
+    flex: 1,
+    border: 'none',
+    background: 'transparent',
+    padding: '8px 12px',
+    borderRadius: 6,
+    fontSize: 13,
+    fontWeight: 600,
+    color: '#666666',
+    cursor: 'pointer',
+    transition: 'all 0.15s ease',
+  },
+  toggleBtnActive: {
+    background: '#ffffff',
+    color: '#111111',
+    boxShadow: '0 2px 4px rgba(0,0,0,0.05), 0 0 0 1px rgba(0,0,0,0.05)',
   },
   inputRow: {
     display: 'flex',
@@ -664,6 +802,16 @@ const s: Record<string, React.CSSProperties> = {
     display: 'inline-block',
     background: '#dbeafe',
     color: '#1d4ed8',
+    fontSize: 11,
+    fontWeight: 700,
+    padding: '3px 8px',
+    borderRadius: 4,
+    whiteSpace: 'nowrap',
+  },
+  badgeManual: {
+    display: 'inline-block',
+    background: '#f3e8ff',
+    color: '#7e22ce',
     fontSize: 11,
     fontWeight: 700,
     padding: '3px 8px',

@@ -30,6 +30,8 @@ import {
 import { Food, Meal, DailyTotals, MealItem } from './types';
 import { fetchFoodsFromSheets } from './lib/googleSheets';
 import { cn, calculateMealTotals, getFriendlyErrorMessage, getGlycemicLoadLabel, getFoodOrUnknown } from './lib/utils';
+import { BarChart2 } from 'lucide-react';
+import StatisticsView from './components/StatisticsView';
 import { downloadDayAsCSV, generateDaySummaryText } from './lib/exportUtils';
 import { format, addDays, isSameDay, isToday, startOfToday } from 'date-fns';
 import { supabase } from './lib/supabase';
@@ -110,7 +112,10 @@ export default function App() {
   const [sheetUrl, setSheetUrl] = useState<string>(() => {
     return localStorage.getItem('fiber_track_sheet_url') || '';
   });
-  const [view, setView] = useState<'timeline' | 'database'>('timeline');
+  const [view, setView] = useState<'timeline' | 'database' | 'statistics'>('timeline');
+  const [statsMeals, setStatsMeals] = useState<Meal[]>([]);
+  const [statsDays, setStatsDays] = useState<7 | 30>(7);
+  const [isStatsLoading, setIsStatsLoading] = useState(false);
   const [isMealModalOpen, setIsMealModalOpen] = useState(false);
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -195,6 +200,48 @@ export default function App() {
 
     fetchMeals();
   }, [user, selectedDate]);
+
+  // Fetch Stats data (7 or 30 days)
+  useEffect(() => {
+    if (!user || view !== 'statistics') return;
+
+    const fetchStatsData = async () => {
+      setIsStatsLoading(true);
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(endDate.getDate() - statsDays);
+
+      const { data, error } = await supabase
+        .from('meals')
+        .select(`
+          *,
+          meal_items (
+            food_id,
+            grams
+          )
+        `)
+        .eq('user_id', user.id)
+        .gte('created_at', startDate.toISOString())
+        .lte('created_at', endDate.toISOString());
+
+      if (error) {
+        console.error('Error fetching stats meals:', error);
+        showToast('Failed to load statistics', 'error');
+      } else if (data) {
+        const mappedMeals = data.map((meal: any) => ({
+          ...meal,
+          items: (meal.meal_items || []).map((mi: any) => ({
+            foodId: mi.food_id,
+            quantityGrams: mi.grams
+          }))
+        }));
+        setStatsMeals(mappedMeals);
+      }
+      setIsStatsLoading(false);
+    };
+
+    fetchStatsData();
+  }, [user, view, statsDays]);
 
   // Load foods
   useEffect(() => {
@@ -509,8 +556,21 @@ export default function App() {
             <Download size={20} />
           </button>
           <button
+            onClick={() => setView('statistics')}
+            className={cn(
+              "p-2 rounded-full transition-colors",
+              view === 'statistics' ? "bg-accent text-white" : "hover:bg-gray-100 text-subtle"
+            )}
+            title="Statistics"
+          >
+            <BarChart2 size={20} />
+          </button>
+          <button
             onClick={() => setView(view === 'timeline' ? 'database' : 'timeline')}
-            className="p-2 hover:bg-gray-100 rounded-full transition-colors text-subtle"
+            className={cn(
+              "p-2 rounded-full transition-colors",
+              view === 'database' ? "bg-accent text-white" : "hover:bg-gray-100 text-subtle"
+            )}
             title={view === 'timeline' ? "Database" : "Timeline"}
           >
             {view === 'timeline' ? <Database size={20} /> : <Clock size={20} />}
@@ -538,10 +598,22 @@ export default function App() {
                 <FileText size={18} />
               </button>
               <button 
-                onClick={handleExport}
-                className="p-2 -mr-2 text-subtle/40 hover:text-accent transition-colors"
+                onClick={() => setView('statistics')}
+                className={cn(
+                  "p-2 -mr-1 transition-colors",
+                  view === 'statistics' ? "text-accent" : "text-subtle/40 hover:text-accent"
+                )}
               >
-                <Download size={18} />
+                <BarChart2 size={18} />
+              </button>
+              <button 
+                onClick={() => setView(view === 'timeline' ? 'database' : 'timeline')}
+                className={cn(
+                  "p-2 -mr-1 transition-colors",
+                  view === 'database' ? "text-accent" : "text-subtle/40 hover:text-accent"
+                )}
+              >
+                {view === 'timeline' ? <Database size={18} /> : <Clock size={18} />}
               </button>
               <span className="text-[11px] font-bold text-subtle uppercase tracking-widest">{Math.round(Math.min(dailyTotals.total_fiber / 35 * 100, 100))}%</span>
             </div>
@@ -566,9 +638,17 @@ export default function App() {
 
       <main className={cn(
         "flex-1 overflow-hidden",
-        view === 'timeline' ? "lg:grid lg:grid-cols-[1fr_360px]" : "max-w-4xl mx-auto w-full p-6"
+        view === 'timeline' ? "lg:grid lg:grid-cols-[1fr_360px]" : "max-w-6xl mx-auto w-full p-6"
       )}>
-        {view === 'timeline' ? (
+        {view === 'statistics' ? (
+          <StatisticsView 
+            meals={statsMeals} 
+            foods={foods} 
+            days={statsDays} 
+            setDays={setStatsDays}
+            isLoading={isStatsLoading}
+          />
+        ) : view === 'timeline' ? (
           <>
             {/* === MOBILE: Chronological list === */}
             <div className="lg:hidden overflow-y-auto bg-bg">

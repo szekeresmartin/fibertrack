@@ -25,6 +25,7 @@ export interface Meal {
   name: string;
   time: string; // ISO string or "HH:mm"
   items: MealItem[];
+  created_at?: string;
 }
 
 export interface DailyTotals {
