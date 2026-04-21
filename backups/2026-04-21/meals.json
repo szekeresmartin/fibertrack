@@ -1,0 +1,359 @@
+[
+  {
+    "id": "7667aeaa-86b2-42a7-8215-acdc9befb887",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "vacsora",
+    "time": "20:00",
+    "created_at": "2026-04-18T18:00:00"
+  },
+  {
+    "id": "a4bb9128-480a-48e7-8080-dcdf044267b6",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "vacsora",
+    "time": "20:00",
+    "created_at": "2026-04-17T10:18:50.776955"
+  },
+  {
+    "id": "3093eeb1-d193-4fbd-b7e3-3410671d4766",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "reggeli",
+    "time": "08:30",
+    "created_at": "2026-04-17T09:05:37.697954"
+  },
+  {
+    "id": "98e66405-5c27-41ad-b6c8-6a5cb3ac3f55",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Ebéd",
+    "time": "12:45",
+    "created_at": "2026-04-21T10:00:00"
+  },
+  {
+    "id": "15f9c325-a024-48c0-bece-45e227a0963d",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "uzsonna",
+    "time": "16:30",
+    "created_at": "2026-04-17T09:58:24.757978"
+  },
+  {
+    "id": "13c43a60-f2f2-417d-9886-ad394848f705",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Edzés előtti",
+    "time": "14:30",
+    "created_at": "2026-04-20T12:00:00"
+  },
+  {
+    "id": "9482ed48-2b93-4b84-a9b7-be92c0a1cbb3",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "tízórai",
+    "time": "10:30",
+    "created_at": "2026-04-17T09:57:09.89228"
+  },
+  {
+    "id": "6cf8b3b4-cfab-4513-9c9f-94b4a6408abb",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Edzés előtti",
+    "time": "14:50",
+    "created_at": "2026-04-21T12:30:00"
+  },
+  {
+    "id": "d2d91be8-29ae-40b9-8da4-c244e18a0d44",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Uzsonna",
+    "time": "17:00",
+    "created_at": "2026-04-21T15:00:00"
+  },
+  {
+    "id": "132f7bfb-b5e4-4f79-b429-4a2646cc4ead",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Reggeli",
+    "time": "08:00",
+    "created_at": "2026-04-19T06:00:00"
+  },
+  {
+    "id": "0a107f32-d08c-4fbe-a0cd-05ad1fbe2744",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Vacsora",
+    "time": "19:30",
+    "created_at": "2026-04-20T17:30:00"
+  },
+  {
+    "id": "94d4d95d-2b05-4652-a0eb-4b0845d0d466",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Ebéd",
+    "time": "12:00",
+    "created_at": "2026-04-20T10:00:00"
+  },
+  {
+    "id": "350a4348-0839-4411-a9a3-2539c0185f9a",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Ebéd",
+    "time": "12:00",
+    "created_at": "2026-04-18T10:00:00"
+  },
+  {
+    "id": "8787ea93-40de-4529-ac98-81b13800610b",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "ebéd",
+    "time": "12:30",
+    "created_at": "2026-04-17T09:58:13.805649"
+  },
+  {
+    "id": "c63117c2-97ae-4373-a092-4206b2099c5e",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "fő meccs után",
+    "time": "18:00",
+    "created_at": "2026-04-19T16:00:00"
+  },
+  {
+    "id": "025a71d0-5037-4c5a-81d6-84a1458175c6",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Ebéd",
+    "time": "12:00",
+    "created_at": "2026-04-19T10:00:00"
+  },
+  {
+    "id": "be80d298-e15e-4036-b1f7-adbba961200d",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "meccs előtti",
+    "time": "14:00",
+    "created_at": "2026-04-19T12:00:00"
+  },
+  {
+    "id": "b77cfdc0-35f0-412e-85c4-cbc08111ad4a",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "közvetlen meccs után",
+    "time": "17:00",
+    "created_at": "2026-04-19T15:00:00"
+  },
+  {
+    "id": "10138c1e-9e26-491f-94b6-f631da129f74",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Reggeli",
+    "time": "08:30",
+    "created_at": "2026-04-21T06:00:00"
+  },
+  {
+    "id": "99d957f9-dfea-448f-8dff-90168b856605",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Reggeli",
+    "time": "08:30",
+    "created_at": "2026-04-22T06:30:00"
+  },
+  {
+    "id": "2aa910de-2ad7-4131-bca6-39f83d60e5bc",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Preworkout",
+    "time": "14:47",
+    "created_at": "2026-04-18T12:47:00"
+  },
+  {
+    "id": "4cb3c335-f365-4718-af29-b2a36f00abc2",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Reggeli",
+    "time": "08:02",
+    "created_at": "2026-04-18T06:02:00"
+  },
+  {
+    "id": "9f15c256-d5a9-42e9-bd23-39826fba98b8",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "uzsonna",
+    "time": "16:00",
+    "created_at": "2026-04-18T14:00:00"
+  },
+  {
+    "id": "5327172b-03f1-4aef-ba7b-97adbdb8a0d6",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Edzés előtti",
+    "time": "14:00",
+    "created_at": "2026-04-22T12:00:00"
+  },
+  {
+    "id": "c4afb23c-0478-44ce-810e-df1d96315b04",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Tízórai",
+    "time": "10:30",
+    "created_at": "2026-04-22T08:30:00"
+  },
+  {
+    "id": "a7b3a19a-8f86-461f-ad9b-0a4efcb6fe43",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Uzsonna",
+    "time": "17:00",
+    "created_at": "2026-04-20T14:00:00"
+  },
+  {
+    "id": "f0064b1d-9ca8-4a6b-85cf-bfe2cab43458",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Reggeli",
+    "time": "08:00",
+    "created_at": "2026-04-20T11:17:00"
+  },
+  {
+    "id": "63761787-bdc5-43e5-b03f-d0df898e0f1e",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "meccs snack",
+    "time": "18:00",
+    "created_at": "2026-04-19T16:00:00"
+  },
+  {
+    "id": "1a9088c5-25d1-4b21-9ec6-56d7f5750cc4",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "vacsora",
+    "time": "20:30",
+    "created_at": "2026-04-19T18:30:00"
+  },
+  {
+    "id": "1e0a4872-4579-4a0f-b640-1cad47bc005c",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Uzsonna",
+    "time": "16:00",
+    "created_at": "2026-04-22T15:00:00"
+  },
+  {
+    "id": "9f0fe05d-6a49-4a67-81a0-8fcd27892dd0",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Vacsora",
+    "time": "19:30",
+    "created_at": "2026-04-22T17:30:00"
+  },
+  {
+    "id": "989086fa-9ef8-45bc-b529-aa2f9f0db277",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Ebéd",
+    "time": "12:45",
+    "created_at": "2026-04-22T10:45:00"
+  },
+  {
+    "id": "b405ba9e-0ad3-4649-a28c-6cdc5c381e72",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Breakfast",
+    "time": "08:00",
+    "created_at": "2026-03-01T07:00:00"
+  },
+  {
+    "id": "fca265cf-4ca3-4a79-acf2-cafe9cd25d4e",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Lunch",
+    "time": "12:30",
+    "created_at": "2026-03-01T11:30:00"
+  },
+  {
+    "id": "50bcb2f0-9e71-4491-87c9-dd3c55134638",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Breakfast",
+    "time": "08:00",
+    "created_at": "2026-03-02T07:00:00"
+  },
+  {
+    "id": "44cc7e2f-f3ec-4b2c-93f6-bdb5af3616f6",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Lunch",
+    "time": "12:30",
+    "created_at": "2026-03-02T11:30:00"
+  },
+  {
+    "id": "a9c9e6a7-a3b4-4837-83e3-703a87f8ea8b",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Breakfast",
+    "time": "08:00",
+    "created_at": "2026-03-03T07:00:00"
+  },
+  {
+    "id": "d7845920-6b39-470c-86d3-5b1a77bac22f",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Lunch",
+    "time": "12:30",
+    "created_at": "2026-03-03T11:30:00"
+  },
+  {
+    "id": "3f95d307-48db-4a6f-8a76-9e962895dd9a",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Breakfast",
+    "time": "08:00",
+    "created_at": "2026-03-04T07:00:00"
+  },
+  {
+    "id": "a2691fc6-8557-46f5-9d3c-7ad32485318e",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Lunch",
+    "time": "12:30",
+    "created_at": "2026-03-04T11:30:00"
+  },
+  {
+    "id": "863b1266-d4ff-4b2f-9611-93aa420248c9",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Breakfast",
+    "time": "08:00",
+    "created_at": "2026-03-07T08:00:00"
+  },
+  {
+    "id": "3d9a1384-b35a-4d5e-a9fb-8f283040e2bb",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Lunch",
+    "time": "12:30",
+    "created_at": "2026-03-07T12:30:00"
+  },
+  {
+    "id": "b2fb6580-6e9b-43a9-a6dd-b2da0f9716db",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Breakfast",
+    "time": "08:00",
+    "created_at": "2026-03-07T08:00:00"
+  },
+  {
+    "id": "457557ac-02b8-4c83-ac1e-5dcf08ccb89d",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Lunch",
+    "time": "12:30",
+    "created_at": "2026-03-07T12:30:00"
+  },
+  {
+    "id": "2bbe56ee-90fc-445e-9626-52d28ba96155",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Breakfast",
+    "time": "08:00",
+    "created_at": "2026-03-08T08:00:00"
+  },
+  {
+    "id": "f5f0243e-c4c7-4c95-85c2-c696da4a85e3",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Lunch",
+    "time": "12:30",
+    "created_at": "2026-03-08T12:30:00"
+  },
+  {
+    "id": "1e3aae32-9291-4317-ae7b-6df3fe2667b4",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Breakfast",
+    "time": "08:00",
+    "created_at": "2026-03-09T08:00:00"
+  },
+  {
+    "id": "63f57b6c-e713-46d6-be1c-22b3394b1f8a",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Lunch",
+    "time": "12:30",
+    "created_at": "2026-03-09T12:30:00"
+  },
+  {
+    "id": "4fbc99bf-d3ff-43c9-abfa-caa7456098a3",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Reggeli",
+    "time": "08:00",
+    "created_at": "2026-04-23T08:00:00"
+  },
+  {
+    "id": "9c1f1b62-bc6c-49fc-bae5-cc4dc06c6f92",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Ebéd",
+    "time": "12:00",
+    "created_at": "2026-04-23T12:00:00"
+  },
+  {
+    "id": "dae652f2-c79c-469c-8b28-04d9ce03a5ad",
+    "user_id": "404f270a-8249-4356-8d3e-7b05250ae8f3",
+    "name": "Vacsora",
+    "time": "19:30",
+    "created_at": "2026-04-21T17:30:00"
+  }
+]
