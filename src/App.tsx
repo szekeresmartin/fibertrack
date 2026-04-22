@@ -33,9 +33,16 @@ import { cn, calculateMealTotals, getFriendlyErrorMessage, getGlycemicLoadLabel,
 import { BarChart2 } from 'lucide-react';
 import StatisticsView from './components/StatisticsView';
 import { downloadDayAsCSV, generateDaySummaryText } from './lib/exportUtils';
-import { format, addDays, isSameDay, isToday, startOfToday } from 'date-fns';
+import { format, addDays, isSameDay, isToday, startOfToday, subDays, parseISO, differenceInDays } from 'date-fns';
 import { supabase } from './lib/supabase';
 import { User } from '@supabase/supabase-js';
+import { computeStats, ProcessedStats } from './lib/statsUtils';
+import UnifiedExportModal from './components/UnifiedExportModal';
+
+const DEFAULT_STATS_RANGE = {
+  start: format(subDays(new Date(), 6), 'yyyy-MM-dd'),
+  end: format(new Date(), 'yyyy-MM-dd')
+};
 
 // No mock authentication, fully relying on Supabase state.
 
@@ -113,14 +120,16 @@ export default function App() {
     return localStorage.getItem('fiber_track_sheet_url') || '';
   });
   const [view, setView] = useState<'timeline' | 'database' | 'statistics'>('timeline');
-  const [statsMeals, setStatsMeals] = useState<Meal[]>([]);
-  const [statsDays, setStatsDays] = useState<7 | 30>(7);
+  const [statsRange, setStatsRange] = useState(DEFAULT_STATS_RANGE);
+  const [statsCache, setStatsCache] = useState<Record<string, ProcessedStats>>({});
   const [isStatsLoading, setIsStatsLoading] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isMealModalOpen, setIsMealModalOpen] = useState(false);
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [mealToDuplicate, setMealToDuplicate] = useState<Meal | null>(null);
   const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState(false);
+  const [isDuplicateDayModalOpen, setIsDuplicateDayModalOpen] = useState(false);
   const [isRecoveryMode, setIsRecoveryMode] = useState(false);
   const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
@@ -201,47 +210,76 @@ export default function App() {
     fetchMeals();
   }, [user, selectedDate]);
 
-  // Fetch Stats data (7 or 30 days)
+  // Cache Invalidation
+  useEffect(() => {
+    setStatsCache({});
+  }, [meals.length, foods.length]);
+
+  // Fetch Stats data (Range-aware with caching)
   useEffect(() => {
     if (!user || view !== 'statistics') return;
 
     const fetchStatsData = async () => {
+      const cacheKey = `${statsRange.start}_${statsRange.end}`;
+      if (statsCache[cacheKey]) return; // Instant switch!
+
       setIsStatsLoading(true);
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setDate(endDate.getDate() - statsDays);
+      
+      const { start, end } = statsRange;
+      const startDate = parseISO(start);
+      const endDate = parseISO(end);
+      const diff = differenceInDays(endDate, startDate) + 1;
+      const prevStart = format(subDays(startDate, diff), 'yyyy-MM-dd');
+      const prevEnd = format(subDays(startDate, 1), 'yyyy-MM-dd');
 
-      const { data, error } = await supabase
-        .from('meals')
-        .select(`
-          *,
-          meal_items (
-            food_id,
-            grams
-          )
-        `)
-        .eq('user_id', user.id)
-        .gte('created_at', startDate.toISOString())
-        .lte('created_at', endDate.toISOString());
+      try {
+        // Fetch Current Range
+        const { data: currRows, error: currErr } = await supabase
+          .from('meals')
+          .select('*, meal_items(food_id, grams)')
+          .eq('user_id', user.id)
+          .gte('created_at', `${start}T00:00:00Z`)
+          .lte('created_at', `${end}T23:59:59Z`);
 
-      if (error) {
-        console.error('Error fetching stats meals:', error);
-        showToast('Failed to load statistics', 'error');
-      } else if (data) {
-        const mappedMeals = data.map((meal: any) => ({
-          ...meal,
-          items: (meal.meal_items || []).map((mi: any) => ({
+        if (currErr) throw currErr;
+
+        // Fetch Previous Range for Comparison
+        const { data: prevRows, error: prevErr } = await supabase
+          .from('meals')
+          .select('*, meal_items(food_id, grams)')
+          .eq('user_id', user.id)
+          .gte('created_at', `${prevStart}T00:00:00Z`)
+          .lte('created_at', `${prevEnd}T23:59:59Z`);
+
+        if (prevErr) throw prevErr;
+
+        // Process Data
+        const mapMeals = (data: any[]) => data.map(m => ({
+          ...m,
+          items: (m.meal_items || []).map((mi: any) => ({
             foodId: mi.food_id,
             quantityGrams: mi.grams
           }))
         }));
-        setStatsMeals(mappedMeals);
+
+        const currMeals = mapMeals(currRows);
+        const prevMeals = mapMeals(prevRows);
+
+        // Compute Base Stats for Comparison
+        const prevStats = computeStats(prevMeals, foods, prevStart, prevEnd);
+        const finalStats = computeStats(currMeals, foods, start, end, prevStats.aggregates);
+
+        setStatsCache(prev => ({ ...prev, [cacheKey]: finalStats }));
+      } catch (err) {
+        console.error('Error fetching stats:', err);
+        showToast('Failed to load comparative statistics', 'error');
+      } finally {
+        setIsStatsLoading(false);
       }
-      setIsStatsLoading(false);
     };
 
     fetchStatsData();
-  }, [user, view, statsDays]);
+  }, [user, view, statsRange, foods]);
 
   // Load foods
   useEffect(() => {
@@ -455,6 +493,77 @@ export default function App() {
     setMealToDuplicate(null);
     showToast('Meal duplicated!', 'success');
   };
+  
+  const handleDuplicateDay = async (targetDateStr: string, keepOriginalTimes: boolean) => {
+    if (!user) return;
+    if (meals.length === 0) {
+      showToast('No meals to duplicate today', 'error');
+      return;
+    }
+
+    // Phase 1: Prepare and Insert Meals
+    const targetDateObj = new Date(targetDateStr);
+    const mealsToInsert = meals.map(meal => {
+      const mealTime = keepOriginalTimes ? meal.time : '12:00';
+      const mealCreatedAt = new Date(`${targetDateStr}T${mealTime}`);
+      
+      return {
+        name: meal.name,
+        time: mealTime,
+        user_id: user.id,
+        created_at: mealCreatedAt.toISOString()
+      };
+    });
+
+    const { data: insertedMeals, error: mealError } = await supabase
+      .from('meals')
+      .insert(mealsToInsert)
+      .select();
+
+    if (mealError) {
+      showToast(getFriendlyErrorMessage(mealError), 'error');
+      return;
+    }
+
+    // Phase 2: Prepare and Insert Items
+    const itemsToInsert: any[] = [];
+    
+    // Logic: original meals and insertedMeals should be in same order if Supabase respects insertion order
+    // But to be safer, we can match and map.
+    // However, since we map 1:1 in the same loop, we can just rely on index IF we are careful.
+    // Better: Associate original meal items with new meal IDs.
+    
+    insertedMeals.forEach((newMeal: any, index: number) => {
+      const originalMeal = meals[index];
+      if (originalMeal.items && originalMeal.items.length > 0) {
+        originalMeal.items.forEach(item => {
+          itemsToInsert.push({
+            meal_id: newMeal.id,
+            food_id: item.foodId,
+            grams: item.quantityGrams
+          });
+        });
+      }
+    });
+
+    if (itemsToInsert.length > 0) {
+      const { error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert);
+      
+      if (itemsError) {
+        // Partial rollback
+        const insertedIds = insertedMeals.map((m: any) => m.id);
+        await supabase.from('meals').delete().in('id', insertedIds);
+        showToast(getFriendlyErrorMessage(itemsError), 'error');
+        return;
+      }
+    }
+
+    // Phase 3: Feedback & Navigation
+    const finalTargetDate = new Date(`${targetDateStr}T12:00:00`); // Nominal center for navigation
+    setSelectedDate(finalTargetDate);
+    setIsDuplicateDayModalOpen(false);
+    showToast(`Successfully duplicated ${meals.length} meals!`, 'success');
+  };
 
   const handleDeleteMeal = async (id: string) => {
     if (!user) return;
@@ -543,33 +652,47 @@ export default function App() {
         <div className="absolute top-4 right-6 flex items-center gap-2">
           <button
             onClick={handleCopySummary}
-            className="p-2 hover:bg-gray-100 rounded-full transition-colors text-subtle"
+            className="p-2 hover:bg-gray-100 rounded-full transition-all hover:scale-110 active:scale-95 text-ink/80"
             title="Copy Summary"
           >
             <FileText size={20} />
           </button>
           <button
             onClick={handleExport}
-            className="p-2 hover:bg-gray-100 rounded-full transition-colors text-subtle"
+            className="p-2 hover:bg-gray-100 rounded-full transition-all hover:scale-110 active:scale-95 text-ink/80"
             title="Export CSV"
           >
             <Download size={20} />
           </button>
           <button
+            onClick={() => setIsDuplicateDayModalOpen(true)}
+            className="p-2 hover:bg-accent/10 text-ink/80 hover:text-accent rounded-full transition-all hover:scale-110 active:scale-95"
+            title="Duplicate Day"
+          >
+            <Copy size={20} />
+          </button>
+          <button
             onClick={() => setView('statistics')}
             className={cn(
-              "p-2 rounded-full transition-colors",
-              view === 'statistics' ? "bg-accent text-white" : "hover:bg-gray-100 text-subtle"
+              "p-2 rounded-full transition-all hover:scale-110 active:scale-95",
+              view === 'statistics' ? "bg-accent text-white" : "hover:bg-gray-100 text-ink/80"
             )}
             title="Statistics"
           >
             <BarChart2 size={20} />
           </button>
           <button
+            onClick={() => setIsExportModalOpen(true)}
+            className="p-2 hover:bg-gray-100 text-ink/80 rounded-full transition-all hover:scale-110 active:scale-95"
+            title="Global Export"
+          >
+            <Download size={20} />
+          </button>
+          <button
             onClick={() => setView(view === 'timeline' ? 'database' : 'timeline')}
             className={cn(
-              "p-2 rounded-full transition-colors",
-              view === 'database' ? "bg-accent text-white" : "hover:bg-gray-100 text-subtle"
+              "p-2 rounded-full transition-all hover:scale-110 active:scale-95",
+              view === 'database' ? "bg-accent text-white" : "hover:bg-gray-100 text-ink/80"
             )}
             title={view === 'timeline' ? "Database" : "Timeline"}
           >
@@ -577,7 +700,7 @@ export default function App() {
           </button>
           <button
             onClick={handleLogout}
-            className="p-2 hover:bg-red-50 text-subtle hover:text-red-500 rounded-full transition-colors"
+            className="p-2 hover:bg-red-50 text-ink/80 hover:text-red-500 rounded-full transition-all hover:scale-110 active:scale-95"
             title="Logout"
           >
             <LogOut size={20} />
@@ -593,15 +716,28 @@ export default function App() {
             <div className="flex items-center gap-3">
               <button 
                 onClick={handleCopySummary}
-                className="p-2 -mr-1 text-subtle/40 hover:text-accent transition-colors"
+                className="p-2 -mr-1 text-ink/80 hover:text-accent transition-all hover:scale-110 active:scale-95"
               >
                 <FileText size={18} />
               </button>
               <button 
+                onClick={() => setIsDuplicateDayModalOpen(true)}
+                className="p-2 -mr-1 text-ink/80 hover:text-accent transition-all hover:scale-110 active:scale-95"
+              >
+                <Copy size={18} />
+              </button>
+              <button 
+                onClick={() => setIsExportModalOpen(true)}
+                className="p-2 -mr-1 text-ink/80 hover:text-accent transition-all hover:scale-110 active:scale-95"
+                title="Export"
+              >
+                <Download size={18} />
+              </button>
+              <button 
                 onClick={() => setView('statistics')}
                 className={cn(
-                  "p-2 -mr-1 transition-colors",
-                  view === 'statistics' ? "text-accent" : "text-subtle/40 hover:text-accent"
+                  "p-2 -mr-1 transition-all hover:scale-110 active:scale-95",
+                  view === 'statistics' ? "text-accent" : "text-ink/80 hover:text-accent"
                 )}
               >
                 <BarChart2 size={18} />
@@ -609,8 +745,8 @@ export default function App() {
               <button 
                 onClick={() => setView(view === 'timeline' ? 'database' : 'timeline')}
                 className={cn(
-                  "p-2 -mr-1 transition-colors",
-                  view === 'database' ? "text-accent" : "text-subtle/40 hover:text-accent"
+                  "p-2 -mr-1 transition-all hover:scale-110 active:scale-95",
+                  view === 'database' ? "text-accent" : "text-ink/80 hover:text-accent"
                 )}
               >
                 {view === 'timeline' ? <Database size={18} /> : <Clock size={18} />}
@@ -642,11 +778,10 @@ export default function App() {
       )}>
         {view === 'statistics' ? (
           <StatisticsView 
-            meals={statsMeals} 
-            foods={foods} 
-            days={statsDays} 
-            setDays={setStatsDays}
+            stats={statsCache[`${statsRange.start}_${statsRange.end}`] || null}
             isLoading={isStatsLoading}
+            onRangeChange={(start, end) => setStatsRange({ start, end })}
+            currentRange={statsRange}
           />
         ) : view === 'timeline' ? (
           <>
@@ -659,7 +794,7 @@ export default function App() {
               ) : sortedMeals.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
                   <div className="w-16 h-16 bg-gray-50 rounded-3xl flex items-center justify-center mb-6">
-                    <Clock size={32} className="text-subtle/30" />
+                    <Clock size={32} className="text-ink/20" />
                   </div>
                   <h3 className="text-ink font-bold text-lg mb-2">No meals logged yet</h3>
                   <p className="text-subtle text-sm max-w-[200px] leading-relaxed mb-8">
@@ -754,7 +889,7 @@ export default function App() {
               {sortedMeals.length === 0 && !isLoading ? (
                 <div className="flex flex-col items-center justify-center py-32 text-center">
                   <div className="w-20 h-20 bg-gray-50 rounded-[2.5rem] flex items-center justify-center mb-8">
-                    <Clock size={40} className="text-subtle/20" />
+                    <Clock size={40} className="text-ink/10" />
                   </div>
                   <h3 className="text-ink font-bold text-xl mb-3">No meals tracked for this day</h3>
                   <p className="text-subtle text-sm max-w-[280px] leading-relaxed mb-10">
@@ -873,21 +1008,21 @@ export default function App() {
                       <div className="flex gap-2">
                         <button
                           onClick={() => { setEditingMeal(meal); setIsMealModalOpen(true); }}
-                          className="p-2 text-subtle hover:text-ink hover:bg-black/5 rounded-lg transition-all active:scale-90"
+                          className="p-2 text-ink/80 hover:text-ink hover:bg-black/5 rounded-lg transition-all hover:scale-110 active:scale-90"
                           title="Edit"
                         >
                           <Edit2 size={18} />
                         </button>
                         <button
                           onClick={() => { setMealToDuplicate(meal); setIsDuplicateModalOpen(true); }}
-                          className="p-2 text-subtle hover:text-ink hover:bg-black/5 rounded-lg transition-all active:scale-90"
+                          className="p-2 text-ink/80 hover:text-ink hover:bg-black/5 rounded-lg transition-all hover:scale-110 active:scale-90"
                           title="Duplicate"
                         >
                           <Copy size={18} />
                         </button>
                         <button
                           onClick={() => handleDeleteMeal(meal.id)}
-                          className="p-2 text-subtle hover:text-red-500 hover:bg-red-50 rounded-lg transition-all active:scale-90"
+                          className="p-2 text-ink/80 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all hover:scale-110 active:scale-90"
                           title="Delete"
                         >
                           <Trash2 size={18} />
@@ -1050,6 +1185,24 @@ export default function App() {
             onDuplicate={handleDuplicateMeal}
           />
         )}
+        {isDuplicateDayModalOpen && (
+          <DuplicateDayModal
+            isOpen={isDuplicateDayModalOpen}
+            onClose={() => setIsDuplicateDayModalOpen(false)}
+            mealCount={meals.length}
+            onDuplicate={handleDuplicateDay}
+          />
+        )}
+        {isExportModalOpen && (
+          <UnifiedExportModal
+            isOpen={isExportModalOpen}
+            onClose={() => setIsExportModalOpen(false)}
+            user_id={user?.id || ''}
+            foods={foods}
+            initialRange={statsRange}
+            showToast={showToast}
+          />
+        )}
       </AnimatePresence>
     </div>
   );
@@ -1092,7 +1245,7 @@ function UpdatePassword({ onComplete }: { onComplete: () => void }) {
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Password</label>
             <div className="relative">
-              <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
+              <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-ink/40" size={18} />
               <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-ink" />
             </div>
           </div>
@@ -1204,7 +1357,7 @@ function Login() {
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Email Address</label>
               <div className="relative">
-                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
+                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-ink/40" size={18} />
                 <input
                   type="email"
                   required
@@ -1220,7 +1373,7 @@ function Login() {
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Password</label>
                 <div className="relative">
-                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-ink/40" size={18} />
                   <input
                     type="password"
                     required
@@ -1307,9 +1460,9 @@ function StatCard({ label, value, unit, highlight = false, small = false }: Stat
         "font-[800] tracking-tight text-ink", 
         small ? "text-[20px]" : "text-[28px]"
       )}>
-        {value}<span className={cn("font-semibold text-subtle ml-[2px]", small ? "text-[13px]" : "text-[16px]")}>{unit}</span>
+        {value}<span className={cn("font-semibold text-ink/60 ml-[2px]", small ? "text-[13px]" : "text-[16px]")}>{unit}</span>
       </span>
-      <span className="text-[10px] uppercase text-subtle/70 font-bold tracking-widest">{label}</span>
+      <span className="text-[10px] uppercase text-ink/50 font-bold tracking-widest">{label}</span>
     </div>
   );
 }
@@ -1363,7 +1516,7 @@ function DuplicateMealModal({ isOpen, onClose, meal, onDuplicate }: DuplicateMea
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Target Date</label>
             <div className="relative">
-              <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
+              <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-ink/40" size={18} />
               <input
                 type="date"
                 value={targetDate}
@@ -1376,7 +1529,7 @@ function DuplicateMealModal({ isOpen, onClose, meal, onDuplicate }: DuplicateMea
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Time</label>
             <div className="relative">
-              <Clock className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
+              <Clock className="absolute left-4 top-1/2 -translate-y-1/2 text-ink/40" size={18} />
               <input
                 type="time"
                 value={targetTime}
@@ -1398,6 +1551,104 @@ function DuplicateMealModal({ isOpen, onClose, meal, onDuplicate }: DuplicateMea
             className="w-full bg-accent text-white py-4 rounded-2xl font-bold text-[14px] uppercase tracking-[0.1em] hover:bg-green-700 transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {isSaving ? <Loader2 className="animate-spin" size={20} /> : 'Duplicate Meal'}
+          </button>
+          <button
+            onClick={onClose}
+            disabled={isSaving}
+            className="w-full bg-gray-100 text-ink py-4 rounded-2xl font-bold text-[14px] uppercase tracking-[0.1em] hover:bg-gray-200 transition-all active:scale-[0.98]"
+          >
+            Cancel
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+interface DuplicateDayModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  mealCount: number;
+  onDuplicate: (date: string, keepTimes: boolean) => Promise<void>;
+}
+
+function DuplicateDayModal({ isOpen, onClose, mealCount, onDuplicate }: DuplicateDayModalProps) {
+  const [targetDate, setTargetDate] = useState(format(addDays(new Date(), 1), 'yyyy-MM-dd'));
+  const [keepTimes, setKeepTimes] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [onClose]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+      />
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.9, opacity: 0, y: 20 }}
+        className="relative w-full max-w-sm bg-white rounded-[32px] shadow-2xl p-8 space-y-8"
+      >
+        <div className="text-center space-y-2">
+          <div className="w-16 h-16 bg-accent/10 text-accent rounded-3xl flex items-center justify-center mx-auto mb-4">
+            <Copy size={32} strokeWidth={2.5} />
+          </div>
+          <h3 className="text-[24px] font-[800] tracking-[-1px] leading-tight">Duplicate Day</h3>
+          <p className="text-subtle text-[14px]">Copying {mealCount} meals to another date</p>
+        </div>
+
+        <div className="space-y-6">
+          <div className="space-y-1">
+            <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Target Date</label>
+            <div className="relative">
+              <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-ink/40" size={18} />
+              <input
+                type="date"
+                value={targetDate}
+                onChange={e => setTargetDate(e.target.value)}
+                className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-ink"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 px-1">
+            <input
+              type="checkbox"
+              id="keepTimes"
+              checked={keepTimes}
+              onChange={e => setKeepTimes(e.target.checked)}
+              className="w-5 h-5 rounded-md border-gray-300 text-accent focus:ring-accent accent-accent"
+            />
+            <label htmlFor="keepTimes" className="text-[14px] font-semibold text-ink cursor-pointer">
+              Keep original meal times
+            </label>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 pt-2">
+          <button
+            onClick={async () => {
+              setIsSaving(true);
+              await onDuplicate(targetDate, keepTimes);
+              setIsSaving(false);
+            }}
+            disabled={isSaving}
+            className="w-full bg-accent text-white py-4 rounded-2xl font-bold text-[14px] uppercase tracking-[0.1em] hover:bg-green-700 transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {isSaving ? <Loader2 className="animate-spin" size={20} /> : 'Duplicate Everything'}
           </button>
           <button
             onClick={onClose}
@@ -1620,21 +1871,21 @@ function MealBlock({ meal, foods, isSelected, onClick, onEdit, onDelete, onDupli
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             onClick={(e) => { e.stopPropagation(); onEdit(); }}
-            className="p-1.5 text-subtle hover:text-ink hover:bg-black/5 rounded-md transition-all active:scale-90"
+            className="p-1.5 text-ink/80 hover:text-ink hover:bg-black/5 rounded-md transition-all hover:scale-110 active:scale-90"
             title="Edit Meal"
           >
             <Edit2 size={16} />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); onDuplicate(); }}
-            className="p-1.5 text-subtle hover:text-ink hover:bg-black/5 rounded-md transition-all active:scale-90"
+            className="p-1.5 text-ink/80 hover:text-ink hover:bg-black/5 rounded-md transition-all hover:scale-110 active:scale-90"
             title="Duplicate Meal"
           >
             <Copy size={16} />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            className="p-1.5 text-subtle hover:text-red-500 hover:bg-red-50 rounded-md transition-all active:scale-90"
+            className="p-1.5 text-ink/80 hover:text-red-500 hover:bg-red-50 rounded-md transition-all hover:scale-110 active:scale-90"
             title="Delete Meal"
           >
             <Trash2 size={16} />
