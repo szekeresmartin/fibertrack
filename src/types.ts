@@ -13,6 +13,7 @@ export interface Food {
   brand?: string;
   source: 'sheets' | 'local';
   isDeleted?: boolean;
+  category?: 'vegetable' | 'other';
 }
 
 export interface MealItem {
@@ -37,4 +38,5 @@ export interface DailyTotals {
   insoluble_fiber: number;
   total_fiber: number;
   gl: number;
+  vegetable_grams: number;
 }

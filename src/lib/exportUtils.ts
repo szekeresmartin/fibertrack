@@ -1,6 +1,6 @@
 import { Food, Meal } from '../types';
 import { calculateItemGL, getFoodOrUnknown, calculateMealTotals } from './utils';
-import { format } from 'date-fns';
+import { format, parseISO } from 'date-fns';
 
 /**
  * Normalizes the daily data and triggers a CSV download.
@@ -149,6 +149,88 @@ export const generateDaySummaryText = (
     });
 
     text += `\n`;
+  });
+
+  return text.trim();
+};
+
+/**
+ * Generates a human-readable text summary for a range of dates.
+ */
+export const generateRangeSummaryText = (
+  meals: Meal[],
+  foods: Food[],
+  range: { start: string, end: string }
+): string => {
+  if (!meals || meals.length === 0) {
+    return `No data found for range: ${range.start} to ${range.end}`;
+  }
+
+  // Group meals by date
+  const grouped: Record<string, Meal[]> = {};
+  meals.forEach(m => {
+    // meals have created_at as ISO string or something similar
+    const d = format(parseISO(m.created_at || ''), 'yyyy.MM.dd');
+    if (!grouped[d]) grouped[d] = [];
+    grouped[d].push(m);
+  });
+
+  let text = `FiberTrack Export: ${range.start} to ${range.end}\n`;
+  text += `==========================================\n\n`;
+
+  // Sort dates
+  const sortedDates = Object.keys(grouped).sort();
+
+  sortedDates.forEach((dateStr, idx) => {
+    const dayMeals = grouped[dateStr];
+    
+    // Reuse the logic from generateDaySummaryText but for a pre-grouped set of meals
+    const mealData = dayMeals.map(meal => {
+      const items = (meal.items || []).map(item => ({
+        food: getFoodOrUnknown(foods, item.foodId),
+        quantity: item.quantityGrams
+      }));
+      return {
+        meal,
+        totals: calculateMealTotals(items),
+        items
+      };
+    });
+
+    const dailyTotals = mealData.reduce((acc, m) => ({
+      fiber: acc.fiber + m.totals.total_fiber,
+      soluble_fiber: acc.soluble_fiber + m.totals.soluble_fiber,
+      insoluble_fiber: acc.insoluble_fiber + m.totals.insoluble_fiber,
+      gl: acc.gl + m.totals.gl,
+      calories: acc.calories + m.totals.calories,
+      protein: acc.protein + m.totals.protein,
+      carbs: acc.carbs + m.totals.carbs,
+      fat: acc.fat + m.totals.fat,
+    }), { 
+      fiber: 0, soluble_fiber: 0, insoluble_fiber: 0, 
+      gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0 
+    });
+
+    text += `${dateStr}\n\n`;
+    text += `Fiber: ${dailyTotals.fiber.toFixed(1)}g / 35g (sol: ${dailyTotals.soluble_fiber.toFixed(1)}g, insol: ${dailyTotals.insoluble_fiber.toFixed(1)}g)\n`;
+    text += `GL: ${Math.round(dailyTotals.gl)}\n`;
+    text += `Calories: ${Math.round(dailyTotals.calories)} kcal\n`;
+    text += `Protein: ${dailyTotals.protein.toFixed(1)}g | Carbs: ${dailyTotals.carbs.toFixed(1)}g | Fat: ${dailyTotals.fat.toFixed(1)}g\n\n`;
+
+    // Process meals sorted by time
+    const sortedMealData = [...mealData].sort((a, b) => a.meal.time.localeCompare(b.meal.time));
+
+    sortedMealData.forEach(({ meal, items }) => {
+      text += `${meal.time} ${meal.name}\n`;
+      items.forEach(({ food, quantity }) => {
+        text += `  - ${food.name_hu} (${quantity}g)\n`;
+      });
+      text += `\n`;
+    });
+
+    if (idx < sortedDates.length - 1) {
+      text += `------------------------------------------\n\n`;
+    }
   });
 
   return text.trim();

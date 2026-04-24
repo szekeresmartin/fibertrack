@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  X, Calendar, FileText, Download, Loader2, Info, CheckCircle2 
+  X, Calendar, FileText, Download, Loader2, Info, CheckCircle2, Copy, Check 
 } from 'lucide-react';
 import { format, subDays, parseISO, isAfter } from 'date-fns';
 import { Food, Meal } from '../types';
 import { supabase } from '../lib/supabase';
 import { buildExportRows } from '../lib/statsUtils';
+import { generateRangeSummaryText } from '../lib/exportUtils';
 import { cn, getFriendlyErrorMessage } from '../lib/utils';
 
 interface UnifiedExportModalProps {
@@ -26,6 +27,8 @@ export default function UnifiedExportModal({
   const [range, setRange] = useState(initialRange);
   const [formatType, setFormatType] = useState<ExportFormat>('csv');
   const [isExporting, setIsExporting] = useState(false);
+  const [isCopying, setIsCopying] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   if (!isOpen) return null;
 
@@ -71,6 +74,44 @@ export default function UnifiedExportModal({
     }
   };
 
+  const handleCopy = async () => {
+    setIsCopying(true);
+    try {
+      const { data, error } = await supabase
+        .from('meals')
+        .select('*, meal_items(food_id, grams)')
+        .eq('user_id', user_id)
+        .gte('created_at', `${range.start}T00:00:00Z`)
+        .lte('created_at', `${range.end}T23:59:59Z`);
+
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        showToast('No data found for this range', 'error');
+        return;
+      }
+
+      const mappedMeals: Meal[] = data.map((m: any) => ({
+        ...m,
+        items: (m.meal_items || []).map((mi: any) => ({
+          foodId: mi.food_id,
+          quantityGrams: mi.grams
+        }))
+      }));
+
+      const text = generateRangeSummaryText(mappedMeals, foods, range);
+      await navigator.clipboard.writeText(text);
+      
+      setCopied(true);
+      showToast('Summary copied to clipboard!', 'success');
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Copy failed:', err);
+      showToast('Failed to copy', 'error');
+    } finally {
+      setIsCopying(false);
+    }
+  };
+
   const exportToCSV = (meals: Meal[]) => {
     const rows = buildExportRows(meals, foods);
     const csvContent = rows.map(r => r.map(cell => `"${(cell || '').toString().replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -80,30 +121,7 @@ export default function UnifiedExportModal({
   };
 
   const exportToText = (meals: Meal[]) => {
-    // Basic multi-day summary
-    let text = `FiberTrack Export: ${range.start} to ${range.end}\n`;
-    text += `==========================================\n\n`;
-
-    // Group meals by date
-    const grouped: Record<string, Meal[]> = {};
-    meals.forEach(m => {
-      const d = format(parseISO(m.created_at || ''), 'yyyy-MM-dd');
-      if (!grouped[d]) grouped[d] = [];
-      grouped[d].push(m);
-    });
-
-    Object.keys(grouped).sort().forEach(date => {
-      text += `--- ${date} ---\n`;
-      grouped[date].sort((a,b) => a.time.localeCompare(b.time)).forEach(m => {
-        text += `${m.time} ${m.name}\n`;
-        (m.items || []).forEach(it => {
-          const food = foods.find(f => f.id === it.foodId);
-          text += `  - ${food?.name_hu || 'Unknown'} (${it.quantityGrams}g)\n`;
-        });
-      });
-      text += `\n`;
-    });
-
+    const text = generateRangeSummaryText(meals, foods, range);
     downloadFile(text, `fibertrack-summary-${range.start}-to-${range.end}.txt`, 'text/plain;charset=utf-8;');
     showToast('Text Summary Exported!', 'success');
   };
@@ -143,6 +161,30 @@ export default function UnifiedExportModal({
         </div>
 
         <div className="space-y-6">
+          <div className="space-y-3">
+             <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Quick Presets</label>
+             <div className="flex gap-2">
+                <button 
+                  onClick={() => setRange({ start: format(new Date(), 'yyyy-MM-dd'), end: format(new Date(), 'yyyy-MM-dd') })}
+                  className="px-4 py-2 bg-gray-50 hover:bg-gray-100 rounded-xl text-xs font-bold text-ink transition-colors"
+                >
+                  Today
+                </button>
+                <button 
+                  onClick={() => setRange({ start: format(subDays(new Date(), 6), 'yyyy-MM-dd'), end: format(new Date(), 'yyyy-MM-dd') })}
+                  className="px-4 py-2 bg-gray-50 hover:bg-gray-100 rounded-xl text-xs font-bold text-ink transition-colors"
+                >
+                  Last 7 Days
+                </button>
+                <button 
+                  onClick={() => setRange({ start: format(subDays(new Date(), 29), 'yyyy-MM-dd'), end: format(new Date(), 'yyyy-MM-dd') })}
+                  className="px-4 py-2 bg-gray-50 hover:bg-gray-100 rounded-xl text-xs font-bold text-ink transition-colors"
+                >
+                  Last 30 Days
+                </button>
+             </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Start Date</label>
@@ -205,10 +247,19 @@ export default function UnifiedExportModal({
         <div className="flex flex-col gap-3 pt-2">
           <button
             onClick={handleExport}
-            disabled={isExporting || (formatType === 'pdf')}
+            disabled={isExporting || isCopying || (formatType === 'pdf')}
             className="w-full bg-ink text-white py-4 rounded-2xl font-bold text-[14px] uppercase tracking-[0.1em] hover:bg-black transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {isExporting ? <Loader2 className="animate-spin" size={20} /> : (formatType === 'pdf' ? 'Open Stats to Export' : 'Export Data')}
+          </button>
+          
+          <button
+            onClick={handleCopy}
+            disabled={isExporting || isCopying}
+            className="w-full bg-accent text-white py-4 rounded-2xl font-bold text-[14px] uppercase tracking-[0.1em] hover:opacity-90 transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-accent/20"
+          >
+            {isCopying ? <Loader2 className="animate-spin" size={20} /> : (copied ? <Check size={20} /> : <Copy size={20} />)}
+            {copied ? 'Copied!' : 'Copy Summary'}
           </button>
           <button
             onClick={onClose}

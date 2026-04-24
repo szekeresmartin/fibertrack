@@ -8,7 +8,7 @@ import { Meal, Food } from '../types';
 import { cn } from '../lib/utils';
 import { 
   Loader2, TrendingUp, Download, Calendar, ArrowUpRight, ArrowDownRight, 
-  Zap, Activity, Star, AlertTriangle, ChevronDown, Filter, Info
+  Zap, Activity, Star, AlertTriangle, ChevronDown, Filter, Info, Leaf
 } from 'lucide-react';
 import { ProcessedStats } from '../lib/statsUtils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -22,12 +22,13 @@ interface StatisticsViewProps {
   currentRange: { start: string, end: string };
 }
 
-type MetricKey = 'fiber' | 'calories' | 'protein' | 'carbs' | 'fat' | 'gl';
+type MetricKey = 'fiber' | 'calories' | 'protein' | 'carbs' | 'fat' | 'gl' | 'vegetableGrams';
 
 const METRIC_CONFIG: Record<MetricKey, { label: string, unit: string, color: string, group: 'Macros' | 'Other' }> = {
   fiber: { label: 'Fiber', unit: 'g', color: '#10b981', group: 'Other' },
   calories: { label: 'Calories', unit: 'kcal', color: '#f59e0b', group: 'Other' },
   gl: { label: 'Glycemic Load', unit: '', color: '#ef4444', group: 'Other' },
+  vegetableGrams: { label: 'Vegetable Intake', unit: 'g', color: '#059669', group: 'Other' },
   protein: { label: 'Protein', unit: 'g', color: '#3b82f6', group: 'Macros' },
   carbs: { label: 'Carbohydrates', unit: 'g', color: '#8b5cf6', group: 'Macros' },
   fat: { label: 'Fat', unit: 'g', color: '#ec4899', group: 'Macros' },
@@ -37,8 +38,11 @@ export default function StatisticsView({ stats, isLoading, onRangeChange, curren
   const [primaryMetric, setPrimaryMetric] = useState<MetricKey>('fiber');
   const [comparisonMetric, setComparisonMetric] = useState<MetricKey | 'none'>('none');
   const [topSourceView, setTopSourceView] = useState<'contribution' | 'frequency'>('contribution');
+  const [vegMetricView, setVegMetricView] = useState<'frequency' | 'grams'>('frequency');
   const [revealedIndex, setRevealedIndex] = useState(-1);
   const reportRef = useRef<HTMLDivElement>(null);
+
+  console.log('fiberRatio', stats?.aggregates?.fiberRatio);
 
   // Reset metrics on range change
   useEffect(() => {
@@ -152,6 +156,14 @@ export default function StatisticsView({ stats, isLoading, onRangeChange, curren
               />
             </div>
             <div className="flex gap-1">
+               <button 
+                onClick={() => onRangeChange(format(new Date(), 'yyyy-MM-dd'), format(new Date(), 'yyyy-MM-dd'))}
+                className={cn("px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:scale-105 active:scale-95", 
+                  differenceInDays(parseISO(currentRange.end), parseISO(currentRange.start)) === 0 ? "bg-ink text-white shadow-md" : "text-subtle hover:bg-gray-50"
+                )}
+              >
+                Today
+              </button>
               <button 
                 onClick={() => onRangeChange(format(subDays(new Date(), 6), 'yyyy-MM-dd'), format(new Date(), 'yyyy-MM-dd'))}
                 className={cn("px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:scale-105 active:scale-95", 
@@ -180,7 +192,7 @@ export default function StatisticsView({ stats, isLoading, onRangeChange, curren
 
         <div id="stats-report-wrapper" className="space-y-8 p-1">
           {/* Layer 0: KPI Summary */}
-          <div className={cn("grid grid-cols-1 md:grid-cols-3 gap-4 transition-all duration-500", revealedIndex < 0 ? "opacity-0 translate-y-4" : "opacity-100 translate-y-0")}>
+          <div className={cn("grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 transition-all duration-500", revealedIndex < 0 ? "opacity-0 translate-y-4" : "opacity-100 translate-y-0")}>
              <TrendCard 
                label="Daily Fiber Avg"
                value={`${formatValue(stats.aggregates.avgFiber, 'fiber')}g`}
@@ -190,6 +202,39 @@ export default function StatisticsView({ stats, isLoading, onRangeChange, curren
                color="text-green-600"
                bg="bg-green-50"
              />
+             {stats.aggregates.fiberRatio?.isVisible && (
+                <div className="bg-white p-8 rounded-[2.5rem] border border-border shadow-sm flex flex-col justify-between group hover:border-ink/20 transition-all min-h-[160px]">
+                   <div>
+                     <p className="text-[10px] font-black uppercase tracking-[0.2em] text-subtle mb-3 truncate">Fiber Type Ratio</p>
+                     <div className="flex items-center gap-2 mb-1">
+                        <span className="text-2xl font-black text-ink">{Math.round((stats.aggregates.fiberRatio.soluble / (stats.aggregates.fiberRatio.soluble + stats.aggregates.fiberRatio.insoluble || 1)) * 100)}%</span>
+                        <span className="text-[10px] font-bold text-subtle uppercase">Soluble</span>
+                     </div>
+                     <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden flex">
+                        <div 
+                          className="h-full bg-green-500" 
+                          style={{ width: `${(stats.aggregates.fiberRatio.soluble / (stats.aggregates.fiberRatio.soluble + stats.aggregates.fiberRatio.insoluble || 1)) * 100}%` }}
+                          title="Soluble"
+                        />
+                        <div 
+                          className="h-full bg-emerald-800" 
+                          style={{ width: `${(stats.aggregates.fiberRatio.insoluble / (stats.aggregates.fiberRatio.soluble + stats.aggregates.fiberRatio.insoluble || 1)) * 100}%` }}
+                          title="Insoluble"
+                        />
+                     </div>
+                     <div className="flex justify-between mt-2">
+                        <span className="text-[9px] font-black text-green-600 uppercase">Soluble</span>
+                        <span className="text-[9px] font-black text-emerald-800 uppercase">Insoluble</span>
+                     </div>
+                   </div>
+                   <div className="mt-4 flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-green-500" />
+                      <span className="text-[10px] font-bold text-subtle">{stats.aggregates.fiberRatio.soluble.toFixed(1)}g</span>
+                      <div className="w-2 h-2 rounded-full bg-emerald-800 ml-2" />
+                      <span className="text-[10px] font-bold text-subtle">{stats.aggregates.fiberRatio.insoluble.toFixed(1)}g</span>
+                   </div>
+                </div>
+             )}
              <TrendCard 
                label="Daily GL Avg"
                value={formatValue(stats.aggregates.avgGL, 'gl')}
@@ -209,6 +254,20 @@ export default function StatisticsView({ stats, isLoading, onRangeChange, curren
                invertColor
                color="text-amber-600"
                bg="bg-amber-50"
+             />
+             <TrendCard 
+               label="Vegetable Intake"
+               value={`${Math.round(stats.aggregates.totalVegetableGrams)}g`}
+               unit="g"
+               color="text-emerald-700"
+               bg="bg-emerald-50"
+             />
+             <TrendCard 
+               label="Vegetable Diversity"
+               value={`${stats.aggregates.vegDiversity}`}
+               unit=" types"
+               color="text-emerald-700"
+               bg="bg-emerald-50"
              />
           </div>
 
@@ -233,6 +292,7 @@ export default function StatisticsView({ stats, isLoading, onRangeChange, curren
                               <option value="fiber">Fiber Intake</option>
                               <option value="calories">Calories</option>
                               <option value="gl">Glycemic Load</option>
+                              <option value="vegetableGrams">Vegetable Intake</option>
                             </optgroup>
                             <optgroup label="Macronutrients">
                               <option value="protein">Protein</option>
@@ -259,6 +319,7 @@ export default function StatisticsView({ stats, isLoading, onRangeChange, curren
                                {primaryMetric !== 'fiber' && <option value="fiber">Fiber</option>}
                                {primaryMetric !== 'calories' && <option value="calories">Calories</option>}
                                {primaryMetric !== 'gl' && <option value="gl">Glycemic Load</option>}
+                               {primaryMetric !== 'vegetableGrams' && <option value="vegetableGrams">Vegetable Intake</option>}
                             </optgroup>
                             <optgroup label="Macronutrients">
                                {primaryMetric !== 'protein' && <option value="protein">Protein</option>}
@@ -422,8 +483,66 @@ export default function StatisticsView({ stats, isLoading, onRangeChange, curren
                     ) : (
                       <div className="flex items-center justify-center h-full text-subtle text-xs bg-gray-50 rounded-3xl">No category data available</div>
                     )}
-                 </div>
-              </div>
+                  </div>
+               </div>
+
+               {/* Layer 3: Vegetable Frequency */}
+               <div className={cn("bg-white p-8 rounded-[2.5rem] border border-border shadow-sm flex flex-col h-full transition-all duration-500", revealedIndex < 2 ? "opacity-0 translate-y-4" : "opacity-100 translate-y-0")}>
+                  <div className="flex justify-between items-start mb-8 gap-4">
+                     <div>
+                       <h3 className="text-xl font-black text-ink tracking-tight flex items-center gap-2">
+                         <Leaf size={20} className="text-emerald-600" />
+                         Vegetable Variety
+                       </h3>
+                       <p className="text-subtle text-xs font-semibold mt-1">Most consumed plants in this range</p>
+                     </div>
+                     <div className="flex bg-gray-50 p-1 rounded-xl">
+                       <button onClick={() => setVegMetricView('frequency')} className={cn("px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all", vegMetricView === 'frequency' ? "bg-white shadow-sm text-ink" : "text-subtle")}>Frequency</button>
+                       <button onClick={() => setVegMetricView('grams')} className={cn("px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all", vegMetricView === 'grams' ? "bg-white shadow-sm text-ink" : "text-subtle")}>Grams</button>
+                     </div>
+                  </div>
+                  
+                  <div className="flex-1 space-y-6">
+                    {stats.vegStats && stats.vegStats.length > 0 ? (
+                      [...stats.vegStats]
+                        .sort((a, b) => vegMetricView === 'frequency' ? b.count - a.count : b.grams - a.grams)
+                        .slice(0, 5)
+                        .map((veg, index) => {
+                          const maxVal = Math.max(...stats.vegStats.map(v => vegMetricView === 'frequency' ? v.count : v.grams));
+                          const currentVal = vegMetricView === 'frequency' ? veg.count : veg.grams;
+                          
+                          return (
+                            <div key={veg.name} className="flex items-center gap-4 group">
+                              <div className={cn("w-10 h-10 rounded-2xl flex items-center justify-center text-xs font-black transition-all group-hover:scale-110", index === 0 ? "bg-emerald-600 text-white" : "bg-emerald-50 text-emerald-700")}>
+                                #{index + 1}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex justify-between items-baseline mb-2">
+                                  <span className="text-sm font-bold truncate text-ink pr-4">{veg.name}</span>
+                                  <span className="text-xs font-mono font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md">
+                                    {vegMetricView === 'frequency' ? `${veg.count}×` : `${veg.grams}g`}
+                                  </span>
+                                </div>
+                                <div className="w-full h-1.5 bg-gray-50 rounded-full overflow-hidden">
+                                  <motion.div 
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${(currentVal / (maxVal || 1)) * 100}%` }}
+                                    transition={{ duration: 1, ease: "easeOut" }}
+                                    className="h-full bg-emerald-500 rounded-full" 
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-48 text-subtle/40 border-2 border-dashed border-gray-50 rounded-3xl">
+                        <Leaf size={24} className="mb-2" />
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-center">No vegetables tracked in this range</p>
+                      </div>
+                    )}
+                  </div>
+               </div>
           </div>
         </div>
       </div>

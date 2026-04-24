@@ -22,6 +22,9 @@ export interface DailyMetrics {
   protein: number;
   carbs: number;
   fat: number;
+  solubleFiber: number;
+  insolubleFiber: number;
+  vegetableGrams: number;
 }
 
 export interface DayData {
@@ -54,12 +57,24 @@ export interface ProcessedStats {
     fiberToGLEfficiency: number;
     efficiencyLevel: 'Low' | 'Balanced' | 'Efficient';
     comparisons?: ComparisonData;
+    fiberRatio: {
+      soluble: number;
+      insoluble: number;
+      isVisible: boolean;
+    } | null;
+    vegDiversity: number;
+    totalVegetableGrams: number;
   };
   distributions: { name: string; fiber: number }[];
   topSources: Record<string, {
     contribution: { name: string; value: number }[];
     frequency: { name: string; count: number }[];
   }>;
+  vegStats: {
+    name: string;
+    count: number;
+    grams: number;
+  }[];
   highlights: {
     maxGLMeal: HighlightMeal | null;
     minFiberMeal: HighlightMeal | null;
@@ -102,6 +117,7 @@ export const computeStats = (
   // 4. Meal-level aggregates
   const distributions = calculateMealDistribution(meals, foods);
   const topSources = findTopSourcesForAllMetrics(meals, foods);
+  const vegStats = calculateVegetableStats(meals, foods);
   const highlights = findHighlights(meals, foods);
 
   // 5. Global Aggregates
@@ -112,7 +128,16 @@ export const computeStats = (
     fiber: acc.fiber + d.fiber,
     gl: acc.gl + d.gl,
     calories: acc.calories + d.calories,
-  }), { fiber: 0, gl: 0, calories: 0 });
+    soluble: acc.soluble + d.solubleFiber,
+    insoluble: acc.insoluble + d.insolubleFiber,
+    vegetableGrams: acc.vegetableGrams + d.vegetableGrams,
+    hasDataQualityIssue: acc.hasDataQualityIssue || (d as any).ratioIsVisible === false
+  }), { 
+    fiber: 0, gl: 0, calories: 0, soluble: 0, insoluble: 0, vegetableGrams: 0, 
+    hasDataQualityIssue: false 
+  });
+
+  const fiberRatioVisible = totals.fiber > 0 && (totals.soluble + totals.insoluble) > 0 && !totals.hasDataQualityIssue;
 
   const avgFiber = activeDaysCount > 0 ? totals.fiber / activeDaysCount : 0;
   const avgGL = activeDaysCount > 0 ? totals.gl / activeDaysCount : 0;
@@ -132,7 +157,14 @@ export const computeStats = (
     totalDays,
     consistencyScore: activeDaysCount > 0 ? Math.round((daysMetTarget / activeDaysCount) * 100) : 0,
     fiberToGLEfficiency: efficiency,
-    efficiencyLevel
+    efficiencyLevel,
+    fiberRatio: {
+      soluble: totals.soluble,
+      insoluble: totals.insoluble,
+      isVisible: fiberRatioVisible
+    },
+    vegDiversity: vegStats.length,
+    totalVegetableGrams: totals.vegetableGrams
   };
 
   // 6. Trend Comparison
@@ -154,6 +186,7 @@ export const computeStats = (
     aggregates,
     distributions,
     topSources,
+    vegStats,
     highlights
   };
 };
@@ -167,7 +200,11 @@ const aggregateByDay = (meals: Meal[], foods: Food[]): Record<string, DailyMetri
   meals.forEach(meal => {
     const dateKey = format(parseISO(meal.created_at || ''), 'yyyy-MM-dd');
     if (!dayGroups[dateKey]) {
-      dayGroups[dateKey] = { fiber: 0, gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0 };
+      dayGroups[dateKey] = { 
+        fiber: 0, gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0, 
+        solubleFiber: 0, insolubleFiber: 0, vegetableGrams: 0,
+        ratioIsVisible: true 
+      } as any;
     }
 
     const mealItems = (meal.items || []).map(item => ({
@@ -182,6 +219,16 @@ const aggregateByDay = (meals: Meal[], foods: Food[]): Record<string, DailyMetri
     dayGroups[dateKey].protein += totals.protein;
     dayGroups[dateKey].carbs += totals.carbs;
     dayGroups[dateKey].fat += totals.fat;
+    dayGroups[dateKey].solubleFiber += totals.soluble_fiber;
+    dayGroups[dateKey].insolubleFiber += totals.insoluble_fiber;
+    dayGroups[dateKey].vegetableGrams += totals.vegetable_grams;
+
+    // Check for missing fiber ratio data
+    mealItems.forEach(it => {
+      if (it.food.total_fiber > 0 && it.food.soluble_fiber === 0 && it.food.insoluble_fiber === 0) {
+        (dayGroups[dateKey] as any).ratioIsVisible = false;
+      }
+    });
   });
 
   return dayGroups;
@@ -202,7 +249,10 @@ const buildTimeSeries = (
   if (grouping === 'daily') {
     interval.forEach(day => {
       const key = format(day, 'yyyy-MM-dd');
-      const metrics = dayGroups[key] || { fiber: 0, gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0 };
+      const metrics = dayGroups[key] || { 
+        fiber: 0, gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0,
+        solubleFiber: 0, insolubleFiber: 0, vegetableGrams: 0
+      };
       
       let classification: DayData['classification'] = undefined;
       if (metrics.gl >= 100) classification = 'High GL';
@@ -221,7 +271,10 @@ const buildTimeSeries = (
     interval.forEach(day => {
       const weekKey = `${format(day, 'yyyy')}-W${getISOWeek(day).toString().padStart(2, '0')}`;
       if (!weekGroups[weekKey]) {
-        weekGroups[weekKey] = { fiber: 0, gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0, count: 0 };
+        weekGroups[weekKey] = { 
+          fiber: 0, gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0, 
+          solubleFiber: 0, insolubleFiber: 0, vegetableGrams: 0, count: 0 
+        } as any;
       }
       const dayKey = format(day, 'yyyy-MM-dd');
       const dayMetrics = dayGroups[dayKey];
@@ -232,6 +285,9 @@ const buildTimeSeries = (
         weekGroups[weekKey].protein += dayMetrics.protein;
         weekGroups[weekKey].carbs += dayMetrics.carbs;
         weekGroups[weekKey].fat += dayMetrics.fat;
+        weekGroups[weekKey].solubleFiber += dayMetrics.solubleFiber;
+        weekGroups[weekKey].insolubleFiber += dayMetrics.insolubleFiber;
+        weekGroups[weekKey].vegetableGrams += dayMetrics.vegetableGrams;
         weekGroups[weekKey].count++;
       }
     });
@@ -245,7 +301,10 @@ const buildTimeSeries = (
           calories: m.calories / (m.count || 1),
           protein: m.protein / (m.count || 1),
           carbs: m.carbs / (m.count || 1),
-          fat: m.fat / (m.count || 1)
+          fat: m.fat / (m.count || 1),
+          solubleFiber: m.solubleFiber / (m.count || 1),
+          insolubleFiber: m.insolubleFiber / (m.count || 1),
+          vegetableGrams: m.vegetableGrams / (m.count || 1)
         }
       });
     });
@@ -255,7 +314,10 @@ const buildTimeSeries = (
     interval.forEach(day => {
       const monthKey = format(day, 'yyyy-MM');
       if (!monthGroups[monthKey]) {
-        monthGroups[monthKey] = { fiber: 0, gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0, count: 0 };
+        monthGroups[monthKey] = { 
+          fiber: 0, gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0, 
+          solubleFiber: 0, insolubleFiber: 0, vegetableGrams: 0, count: 0 
+        } as any;
       }
       const dayKey = format(day, 'yyyy-MM-dd');
       const dayMetrics = dayGroups[dayKey];
@@ -266,6 +328,9 @@ const buildTimeSeries = (
         monthGroups[monthKey].protein += dayMetrics.protein;
         monthGroups[monthKey].carbs += dayMetrics.carbs;
         monthGroups[monthKey].fat += dayMetrics.fat;
+        monthGroups[monthKey].solubleFiber += dayMetrics.solubleFiber;
+        monthGroups[monthKey].insolubleFiber += dayMetrics.insolubleFiber;
+        monthGroups[monthKey].vegetableGrams += dayMetrics.vegetableGrams;
         monthGroups[monthKey].count++;
       }
     });
@@ -279,7 +344,10 @@ const buildTimeSeries = (
           calories: m.calories / (m.count || 1),
           protein: m.protein / (m.count || 1),
           carbs: m.carbs / (m.count || 1),
-          fat: m.fat / (m.count || 1)
+          fat: m.fat / (m.count || 1),
+          solubleFiber: m.solubleFiber / (m.count || 1),
+          insolubleFiber: m.insolubleFiber / (m.count || 1),
+          vegetableGrams: m.vegetableGrams / (m.count || 1)
         }
       });
     });
@@ -346,6 +414,26 @@ const findTopSourcesForAllMetrics = (meals: Meal[], foods: Food[]) => {
   });
 
   return result;
+};
+
+const calculateVegetableStats = (meals: Meal[], foods: Food[]) => {
+  const stats: Record<string, { count: number; grams: number }> = {};
+  
+  meals.forEach(meal => {
+    (meal.items || []).forEach(item => {
+      const food = getFoodOrUnknown(foods, item.foodId);
+      if (food.category === 'vegetable') {
+        const name = food.name_hu || 'Unknown';
+        if (!stats[name]) stats[name] = { count: 0, grams: 0 };
+        stats[name].count += 1;
+        stats[name].grams += item.quantityGrams;
+      }
+    });
+  });
+
+  return Object.entries(stats)
+    .map(([name, s]) => ({ name, count: s.count, grams: Math.round(s.grams) }))
+    .sort((a, b) => b.count - a.count);
 };
 
 const findHighlights = (meals: Meal[], foods: Food[]): ProcessedStats['highlights'] => {

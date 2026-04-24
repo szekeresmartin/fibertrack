@@ -49,6 +49,7 @@ export function calculateMealTotals(items: { food: Food; quantity: number }[]) {
     (acc, item) => {
       const factor = item.quantity / 100;
       const itemGL = calculateItemGL(item.food, item.quantity);
+      const isVegetable = item.food.category === 'vegetable';
 
       return {
         calories: acc.calories + item.food.calories * factor,
@@ -59,6 +60,7 @@ export function calculateMealTotals(items: { food: Food; quantity: number }[]) {
         insoluble_fiber: acc.insoluble_fiber + item.food.insoluble_fiber * factor,
         total_fiber: acc.total_fiber + item.food.total_fiber * factor,
         gl: acc.gl + itemGL,
+        vegetable_grams: acc.vegetable_grams + (isVegetable ? item.quantity : 0),
       };
     },
     {
@@ -70,6 +72,7 @@ export function calculateMealTotals(items: { food: Food; quantity: number }[]) {
       insoluble_fiber: 0,
       total_fiber: 0,
       gl: 0,
+      vegetable_grams: 0,
     }
   );
 }

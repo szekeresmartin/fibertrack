@@ -55,6 +55,7 @@ interface NutritionResult {
   sources: NutrientSources;
   source: 'cache' | 'edamam' | 'manual';
   usedOpenAI: boolean;
+  category: 'vegetable' | 'other';
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -78,7 +79,8 @@ async function lookupCache(query: string): Promise<NutritionResult | null> {
       name_hu, name_en, brand,
       calories, protein, carbs, fat,
       total_fiber, soluble_fiber, insoluble_fiber, gi,
-      sugar, sodium, cholesterol, calcium, iron, potassium, magnesium
+      sugar, sodium, cholesterol, calcium, iron, potassium, magnesium,
+      category
     `)
     .or(`name_hu.ilike.${q},name_en.ilike.${q}`)
     .limit(1)
@@ -108,6 +110,7 @@ async function lookupCache(query: string): Promise<NutritionResult | null> {
     sources: {},
     source: 'cache',
     usedOpenAI: false,
+    category: data.category ?? 'other',
   };
 }
 
@@ -198,6 +201,7 @@ async function lookupEdamam(query: string): Promise<NutritionResult> {
     sources,
     source: 'edamam',
     usedOpenAI: false,
+    category: 'other',
   };
 }
 
@@ -305,6 +309,7 @@ export default function AdminFoodGenerator() {
       },
       source: 'manual',
       usedOpenAI: false,
+      category: 'other',
     };
     setResult(emptyResult);
     setEditNameHu('');
@@ -416,6 +421,7 @@ export default function AdminFoodGenerator() {
       fiber_source:           src.total_fiber     ?? null,
       soluble_fiber_source:   src.soluble_fiber   ?? null,
       insoluble_fiber_source: src.insoluble_fiber ?? null,
+      category:               result.category,
     });
 
     setSaving(false);
@@ -519,6 +525,38 @@ export default function AdminFoodGenerator() {
             {result.source === 'manual' && (
               <span style={s.resultName}>New Item</span>
             )}
+            
+            {/* Category Toggle */}
+            <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+              <button 
+                onClick={() => setResult(prev => prev ? { ...prev, category: 'vegetable' } : null)}
+                style={{
+                  ...s.badge,
+                  marginBottom: 0,
+                  cursor: 'pointer',
+                  background: result.category === 'vegetable' ? '#16a34a' : '#f1f1f1',
+                  color: result.category === 'vegetable' ? '#ffffff' : '#555555',
+                  borderColor: result.category === 'vegetable' ? '#16a34a' : '#d4d4d4',
+                  opacity: 1,
+                }}
+              >
+                Vegetable
+              </button>
+              <button 
+                onClick={() => setResult(prev => prev ? { ...prev, category: 'other' } : null)}
+                style={{
+                  ...s.badge,
+                  marginBottom: 0,
+                  cursor: 'pointer',
+                  background: result.category === 'other' ? '#555555' : '#f1f1f1',
+                  color: result.category === 'other' ? '#ffffff' : '#555555',
+                  borderColor: result.category === 'other' ? '#555555' : '#d4d4d4',
+                  opacity: 1,
+                }}
+              >
+                Other
+              </button>
+            </div>
           </div>
 
           {/* Editable Nutrients List */}
