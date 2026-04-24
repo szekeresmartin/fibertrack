@@ -38,6 +38,7 @@ import { supabase } from './lib/supabase';
 import { User } from '@supabase/supabase-js';
 import { computeStats, ProcessedStats } from './lib/statsUtils';
 import UnifiedExportModal from './components/UnifiedExportModal';
+import DatePickerModal from './components/DatePickerModal';
 
 const DEFAULT_STATS_RANGE = {
   start: format(subDays(new Date(), 6), 'yyyy-MM-dd'),
@@ -50,9 +51,10 @@ const DEFAULT_STATS_RANGE = {
 interface DayStripProps {
   selectedDate: Date;
   onSelect: (date: Date) => void;
+  onOpenPicker: () => void;
 }
 
-function DayStrip({ selectedDate, onSelect }: DayStripProps) {
+function DayStrip({ selectedDate, onSelect, onOpenPicker }: DayStripProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   
   // Generate 7 days centered on selectedDate
@@ -74,6 +76,15 @@ function DayStrip({ selectedDate, onSelect }: DayStripProps) {
       className="flex gap-2 overflow-x-auto pb-4 pt-2 no-scrollbar scroll-smooth px-4 sm:px-0"
       style={{ scrollSnapType: 'x proximity' }}
     >
+      <button
+        onClick={onOpenPicker}
+        className="flex flex-col items-center justify-center min-w-[56px] py-3 rounded-2xl transition-all active:scale-95 bg-white border border-border text-subtle hover:border-accent/40 group"
+        style={{ scrollSnapAlign: 'center' }}
+      >
+        <Calendar size={20} className="group-hover:text-accent transition-colors" />
+        <span className="text-[10px] font-bold uppercase tracking-widest mt-1">Pick</span>
+      </button>
+
       {days.map((day) => {
         const active = isSameDay(day, selectedDate);
         const today = isToday(day);
@@ -133,6 +144,7 @@ export default function App() {
   const [isRecoveryMode, setIsRecoveryMode] = useState(false);
   const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
   const nowIndicatorRef = useRef<HTMLDivElement>(null);
 
@@ -638,7 +650,7 @@ export default function App() {
           </div>
 
           {/* Date Selector Strip */}
-          <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} />
+          <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} onOpenPicker={() => setIsDatePickerOpen(true)} />
         </div>
 
         <div className="flex flex-wrap gap-8 pb-2">
@@ -768,7 +780,7 @@ export default function App() {
           </div>
         </div>
         <div className="border-b border-border">
-          <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} />
+          <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} onOpenPicker={() => setIsDatePickerOpen(true)} />
         </div>
       </div>
 
@@ -1204,6 +1216,13 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+
+      <DatePickerModal 
+        isOpen={isDatePickerOpen}
+        onClose={() => setIsDatePickerOpen(false)}
+        selectedDate={selectedDate}
+        onSelect={setSelectedDate}
+      />
     </div>
   );
 }
