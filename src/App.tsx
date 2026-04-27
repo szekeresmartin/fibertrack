@@ -25,25 +25,22 @@ import {
   Download,
   FileText,
   Calendar,
-  Copy
+  Copy,
+  BarChart2,
+  ShoppingCart
 } from 'lucide-react';
 import { Food, Meal, DailyTotals, MealItem } from './types';
 import { fetchFoodsFromSheets } from './lib/googleSheets';
 import { cn, calculateMealTotals, getFriendlyErrorMessage, getGlycemicLoadLabel, getFoodOrUnknown } from './lib/utils';
-import { BarChart2 } from 'lucide-react';
 import StatisticsView from './components/StatisticsView';
+import WeeklyPlannerView from './components/WeeklyPlannerView';
 import { downloadDayAsCSV, generateDaySummaryText } from './lib/exportUtils';
 import { format, addDays, isSameDay, isToday, startOfToday, subDays, parseISO, differenceInDays } from 'date-fns';
-import { supabase } from './lib/supabase';
-import { User } from '@supabase/supabase-js';
 import { computeStats, ProcessedStats } from './lib/statsUtils';
 import UnifiedExportModal from './components/UnifiedExportModal';
 import DatePickerModal from './components/DatePickerModal';
-
-const DEFAULT_STATS_RANGE = {
-  start: format(subDays(new Date(), 6), 'yyyy-MM-dd'),
-  end: format(new Date(), 'yyyy-MM-dd')
-};
+import { supabase } from './lib/supabase';
+import { User } from '@supabase/supabase-js';
 
 // No mock authentication, fully relying on Supabase state.
 
@@ -76,15 +73,6 @@ function DayStrip({ selectedDate, onSelect, onOpenPicker }: DayStripProps) {
       className="flex gap-2 overflow-x-auto pb-4 pt-2 no-scrollbar scroll-smooth px-4 sm:px-0"
       style={{ scrollSnapType: 'x proximity' }}
     >
-      <button
-        onClick={onOpenPicker}
-        className="flex flex-col items-center justify-center min-w-[56px] py-3 rounded-2xl transition-all active:scale-95 bg-white border border-border text-subtle hover:border-accent/40 group"
-        style={{ scrollSnapAlign: 'center' }}
-      >
-        <Calendar size={20} className="group-hover:text-accent transition-colors" />
-        <span className="text-[10px] font-bold uppercase tracking-widest mt-1">Pick</span>
-      </button>
-
       {days.map((day) => {
         const active = isSameDay(day, selectedDate);
         const today = isToday(day);
@@ -130,22 +118,25 @@ export default function App() {
   const [sheetUrl, setSheetUrl] = useState<string>(() => {
     return localStorage.getItem('fiber_track_sheet_url') || '';
   });
-  const [view, setView] = useState<'timeline' | 'database' | 'statistics'>('timeline');
-  const [statsRange, setStatsRange] = useState(DEFAULT_STATS_RANGE);
-  const [statsCache, setStatsCache] = useState<Record<string, ProcessedStats>>({});
+  const [view, setView] = useState<'timeline' | 'database' | 'statistics' | 'planner'>('timeline');
+  const [statsMeals, setStatsMeals] = useState<Meal[]>([]);
+  const [statsDays, setStatsDays] = useState<7 | 30>(7);
   const [isStatsLoading, setIsStatsLoading] = useState(false);
-  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isMealModalOpen, setIsMealModalOpen] = useState(false);
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [mealToDuplicate, setMealToDuplicate] = useState<Meal | null>(null);
   const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState(false);
   const [isDuplicateDayModalOpen, setIsDuplicateDayModalOpen] = useState(false);
+  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [statsRange, setStatsRange] = useState({ start: format(subDays(new Date(), 6), 'yyyy-MM-dd'), end: format(new Date(), 'yyyy-MM-dd') });
+  const [statsCache, setStatsCache] = useState<Record<string, ProcessedStats>>({});
   const [isRecoveryMode, setIsRecoveryMode] = useState(false);
   const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
-  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
+  const [quickAddInput, setQuickAddInput] = useState('');
   const nowIndicatorRef = useRef<HTMLDivElement>(null);
 
   const showToast = (text: string, type: 'success' | 'error') => {
@@ -196,7 +187,14 @@ export default function App() {
           *,
           meal_items (
             food_id,
-            grams
+            grams,
+            is_custom,
+            name,
+            calories,
+            protein,
+            carbs,
+            fat,
+            fiber
           )
         `)
         .eq('user_id', user.id)
@@ -210,7 +208,14 @@ export default function App() {
           ...meal,
           items: (meal.meal_items || []).map((mi: any) => ({
             foodId: mi.food_id,
-            quantityGrams: mi.grams
+            quantityGrams: mi.grams,
+            is_custom: mi.is_custom || (mi.food_id === null),
+            name: mi.name,
+            calories: mi.calories,
+            protein: mi.protein,
+            carbs: mi.carbs,
+            fat: mi.fat,
+            fiber: mi.fiber
           }))
         }));
         setMeals(mappedMeals);
@@ -222,76 +227,47 @@ export default function App() {
     fetchMeals();
   }, [user, selectedDate]);
 
-  // Cache Invalidation
-  useEffect(() => {
-    setStatsCache({});
-  }, [meals.length, foods.length]);
-
-  // Fetch Stats data (Range-aware with caching)
+  // Fetch Stats data (7 or 30 days)
   useEffect(() => {
     if (!user || view !== 'statistics') return;
 
     const fetchStatsData = async () => {
-      const cacheKey = `${statsRange.start}_${statsRange.end}`;
-      if (statsCache[cacheKey]) return; // Instant switch!
-
       setIsStatsLoading(true);
-      
-      const { start, end } = statsRange;
-      const startDate = parseISO(start);
-      const endDate = parseISO(end);
-      const diff = differenceInDays(endDate, startDate) + 1;
-      const prevStart = format(subDays(startDate, diff), 'yyyy-MM-dd');
-      const prevEnd = format(subDays(startDate, 1), 'yyyy-MM-dd');
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(endDate.getDate() - statsDays);
 
-      try {
-        // Fetch Current Range
-        const { data: currRows, error: currErr } = await supabase
-          .from('meals')
-          .select('*, meal_items(food_id, grams)')
-          .eq('user_id', user.id)
-          .gte('created_at', `${start}T00:00:00Z`)
-          .lte('created_at', `${end}T23:59:59Z`);
+      const { data, error } = await supabase
+        .from('meals')
+        .select(`
+          *,
+          meal_items (
+            food_id,
+            grams
+          )
+        `)
+        .eq('user_id', user.id)
+        .gte('created_at', startDate.toISOString())
+        .lte('created_at', endDate.toISOString());
 
-        if (currErr) throw currErr;
-
-        // Fetch Previous Range for Comparison
-        const { data: prevRows, error: prevErr } = await supabase
-          .from('meals')
-          .select('*, meal_items(food_id, grams)')
-          .eq('user_id', user.id)
-          .gte('created_at', `${prevStart}T00:00:00Z`)
-          .lte('created_at', `${prevEnd}T23:59:59Z`);
-
-        if (prevErr) throw prevErr;
-
-        // Process Data
-        const mapMeals = (data: any[]) => data.map(m => ({
-          ...m,
-          items: (m.meal_items || []).map((mi: any) => ({
+      if (error) {
+        console.error('Error fetching stats meals:', error);
+        showToast('Failed to load statistics', 'error');
+      } else if (data) {
+        const mappedMeals = data.map((meal: any) => ({
+          ...meal,
+          items: (meal.meal_items || []).map((mi: any) => ({
             foodId: mi.food_id,
             quantityGrams: mi.grams
           }))
         }));
-
-        const currMeals = mapMeals(currRows);
-        const prevMeals = mapMeals(prevRows);
-
-        // Compute Base Stats for Comparison
-        const prevStats = computeStats(prevMeals, foods, prevStart, prevEnd);
-        const finalStats = computeStats(currMeals, foods, start, end, prevStats.aggregates);
-
-        setStatsCache(prev => ({ ...prev, [cacheKey]: finalStats }));
-      } catch (err) {
-        console.error('Error fetching stats:', err);
-        showToast('Failed to load comparative statistics', 'error');
-      } finally {
-        setIsStatsLoading(false);
+        setStatsMeals(mappedMeals);
       }
+      setIsStatsLoading(false);
     };
 
     fetchStatsData();
-  }, [user, view, statsRange, foods]);
+  }, [user, view, statsDays]);
 
   // Load foods
   useEffect(() => {
@@ -359,8 +335,9 @@ export default function App() {
   const dailyTotals = useMemo(() => {
     return meals.reduce((acc, meal) => {
       const mealItems = (meal.items || []).map(item => ({
-        food: getFoodOrUnknown(foods, item.foodId),
-        quantity: item.quantityGrams
+        food: getFoodOrUnknown(foods, item.foodId || ''),
+        quantity: item.quantityGrams,
+        customMacros: item
       }));
 
       const totals = calculateMealTotals(mealItems);
@@ -429,8 +406,15 @@ export default function App() {
       
       const itemsToInsert = meal.items?.map(item => ({
         meal_id: insertedMeal.id,
-        food_id: item.foodId,
-        grams: item.quantityGrams
+        food_id: item.is_custom ? null : item.foodId,
+        grams: item.quantityGrams,
+        name: item.is_custom ? item.name : null,
+        calories: item.is_custom ? item.calories : null,
+        protein: item.is_custom ? item.protein : null,
+        carbs: item.is_custom ? item.carbs : null,
+        fat: item.is_custom ? item.fat : null,
+        fiber: item.is_custom ? (item.fiber || 0) : null,
+        is_custom: !!item.is_custom
       })) || [];
 
       const { error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert);
@@ -485,8 +469,15 @@ export default function App() {
     if (meal.items && meal.items.length > 0) {
       const itemsToInsert = meal.items.map(item => ({
         meal_id: insertedMeal.id,
-        food_id: item.foodId,
-        grams: item.quantityGrams
+        food_id: item.is_custom ? null : item.foodId,
+        grams: item.quantityGrams,
+        is_custom: !!item.is_custom,
+        name: item.is_custom ? item.name : null,
+        calories: item.is_custom ? item.calories : null,
+        protein: item.is_custom ? item.protein : null,
+        carbs: item.is_custom ? item.carbs : null,
+        fat: item.is_custom ? item.fat : null,
+        fiber: item.is_custom ? ((item as any).fiber || 0) : null
       }));
 
       const { error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert);
@@ -505,78 +496,52 @@ export default function App() {
     setMealToDuplicate(null);
     showToast('Meal duplicated!', 'success');
   };
-  
+
   const handleDuplicateDay = async (targetDateStr: string, keepOriginalTimes: boolean) => {
     if (!user) return;
-    if (meals.length === 0) {
-      showToast('No meals to duplicate today', 'error');
-      return;
-    }
+    if (meals.length === 0) { showToast('No meals to duplicate today', 'error'); return; }
 
-    // Phase 1: Prepare and Insert Meals
-    const targetDateObj = new Date(targetDateStr);
     const mealsToInsert = meals.map(meal => {
       const mealTime = keepOriginalTimes ? meal.time : '12:00';
-      const mealCreatedAt = new Date(`${targetDateStr}T${mealTime}`);
-      
-      return {
-        name: meal.name,
-        time: mealTime,
-        user_id: user.id,
-        created_at: mealCreatedAt.toISOString()
-      };
+      return { name: meal.name, time: mealTime, user_id: user.id, created_at: `${targetDateStr}T${mealTime}` };
     });
 
-    const { data: insertedMeals, error: mealError } = await supabase
-      .from('meals')
-      .insert(mealsToInsert)
-      .select();
+    const { data: insertedMeals, error: mealError } = await supabase.from('meals').insert(mealsToInsert).select();
+    if (mealError) { showToast(getFriendlyErrorMessage(mealError), 'error'); return; }
 
-    if (mealError) {
-      showToast(getFriendlyErrorMessage(mealError), 'error');
-      return;
-    }
-
-    // Phase 2: Prepare and Insert Items
     const itemsToInsert: any[] = [];
-    
-    // Logic: original meals and insertedMeals should be in same order if Supabase respects insertion order
-    // But to be safer, we can match and map.
-    // However, since we map 1:1 in the same loop, we can just rely on index IF we are careful.
-    // Better: Associate original meal items with new meal IDs.
-    
     insertedMeals.forEach((newMeal: any, index: number) => {
       const originalMeal = meals[index];
-      if (originalMeal.items && originalMeal.items.length > 0) {
-        originalMeal.items.forEach(item => {
-          itemsToInsert.push({
-            meal_id: newMeal.id,
-            food_id: item.foodId,
-            grams: item.quantityGrams
-          });
+      (originalMeal.items || []).forEach(item => {
+        itemsToInsert.push({ 
+          meal_id: newMeal.id, 
+          food_id: item.is_custom ? null : item.foodId, 
+          grams: item.quantityGrams,
+          is_custom: !!item.is_custom,
+          name: item.is_custom ? item.name : null,
+          calories: item.is_custom ? item.calories : null,
+          protein: item.is_custom ? item.protein : null,
+          carbs: item.is_custom ? item.carbs : null,
+          fat: item.is_custom ? item.fat : null,
+          fiber: item.is_custom ? ((item as any).fiber || 0) : null
         });
-      }
+      });
     });
 
     if (itemsToInsert.length > 0) {
       const { error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert);
-      
       if (itemsError) {
-        // Partial rollback
-        const insertedIds = insertedMeals.map((m: any) => m.id);
-        await supabase.from('meals').delete().in('id', insertedIds);
+        const ids = insertedMeals.map((m: any) => m.id);
+        await supabase.from('meals').delete().in('id', ids);
         showToast(getFriendlyErrorMessage(itemsError), 'error');
         return;
       }
     }
 
-    // Phase 3: Feedback & Navigation
-    const finalTargetDate = new Date(`${targetDateStr}T12:00:00`); // Nominal center for navigation
-    setSelectedDate(finalTargetDate);
+    setSelectedDate(new Date(`${targetDateStr}T12:00:00`));
     setIsDuplicateDayModalOpen(false);
-    showToast(`Successfully duplicated ${meals.length} meals!`, 'success');
+    showToast(`Duplicated ${meals.length} meals!`, 'success');
   };
-
   const handleDeleteMeal = async (id: string) => {
     if (!user) return;
 
@@ -595,6 +560,53 @@ export default function App() {
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
+  };
+
+  const handleQuickAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickAddInput.trim() || !selectedMeal) return;
+
+    const input = quickAddInput.trim();
+    // Regex: name followed by space and then digits (optionally followed by g/pcs)
+    const match = input.match(/^(.*?)\s+(\d+)(?:g|pcs|db)?$/i);
+    let name = input;
+    let grams = 100;
+
+    if (match) {
+      name = match[1].trim();
+      grams = parseInt(match[2], 10);
+    }
+
+    // Search for food: exact match first, then partial
+    const targetFood = foods.find(f => 
+      (f.name_hu || '').toLowerCase() === name.toLowerCase() || 
+      (f.name_en || '').toLowerCase() === name.toLowerCase()
+    ) || foods.find(f => 
+      (f.name_hu || '').toLowerCase().includes(name.toLowerCase()) || 
+      (f.name_en || '').toLowerCase().includes(name.toLowerCase())
+    );
+
+    if (!targetFood) {
+      showToast(`Food not found: ${name}`, 'error');
+      return;
+    }
+
+    // Immutable update: Append new item
+    const updatedMeal = {
+      ...selectedMeal,
+      items: [...(selectedMeal.items || []), {
+        foodId: targetFood.id,
+        quantityGrams: grams
+      }]
+    };
+
+    try {
+      await handleSaveMeal(updatedMeal);
+      setQuickAddInput('');
+      showToast(`Quick added ${targetFood.name_hu}`, 'success');
+    } catch (err) {
+      console.error('Quick Add failed:', err);
+    }
   };
 
   const handleExport = () => {
@@ -664,47 +676,43 @@ export default function App() {
         <div className="absolute top-4 right-6 flex items-center gap-2">
           <button
             onClick={handleCopySummary}
-            className="p-2 hover:bg-gray-100 rounded-full transition-all hover:scale-110 active:scale-95 text-ink/80"
+            className="p-2 hover:bg-gray-100 rounded-full transition-colors text-subtle"
             title="Copy Summary"
           >
             <FileText size={20} />
           </button>
           <button
             onClick={handleExport}
-            className="p-2 hover:bg-gray-100 rounded-full transition-all hover:scale-110 active:scale-95 text-ink/80"
+            className="p-2 hover:bg-gray-100 rounded-full transition-colors text-subtle"
             title="Export CSV"
           >
             <Download size={20} />
           </button>
           <button
-            onClick={() => setIsDuplicateDayModalOpen(true)}
-            className="p-2 hover:bg-accent/10 text-ink/80 hover:text-accent rounded-full transition-all hover:scale-110 active:scale-95"
-            title="Duplicate Day"
-          >
-            <Copy size={20} />
-          </button>
-          <button
             onClick={() => setView('statistics')}
             className={cn(
-              "p-2 rounded-full transition-all hover:scale-110 active:scale-95",
-              view === 'statistics' ? "bg-accent text-white" : "hover:bg-gray-100 text-ink/80"
+              "p-2 rounded-full transition-colors",
+              view === 'statistics' ? "bg-accent text-white" : "hover:bg-gray-100 text-subtle"
             )}
             title="Statistics"
           >
             <BarChart2 size={20} />
           </button>
           <button
-            onClick={() => setIsExportModalOpen(true)}
-            className="p-2 hover:bg-gray-100 text-ink/80 rounded-full transition-all hover:scale-110 active:scale-95"
-            title="Global Export"
+            onClick={() => setView('planner')}
+            className={cn(
+              "p-2 rounded-full transition-colors",
+              view === 'planner' ? "bg-accent text-white" : "hover:bg-gray-100 text-subtle"
+            )}
+            title="Weekly Planner"
           >
-            <Download size={20} />
+            <ShoppingCart size={20} />
           </button>
           <button
             onClick={() => setView(view === 'timeline' ? 'database' : 'timeline')}
             className={cn(
-              "p-2 rounded-full transition-all hover:scale-110 active:scale-95",
-              view === 'database' ? "bg-accent text-white" : "hover:bg-gray-100 text-ink/80"
+              "p-2 rounded-full transition-colors",
+              view === 'database' ? "bg-accent text-white" : "hover:bg-gray-100 text-subtle"
             )}
             title={view === 'timeline' ? "Database" : "Timeline"}
           >
@@ -712,7 +720,7 @@ export default function App() {
           </button>
           <button
             onClick={handleLogout}
-            className="p-2 hover:bg-red-50 text-ink/80 hover:text-red-500 rounded-full transition-all hover:scale-110 active:scale-95"
+            className="p-2 hover:bg-red-50 text-subtle hover:text-red-500 rounded-full transition-colors"
             title="Logout"
           >
             <LogOut size={20} />
@@ -728,37 +736,33 @@ export default function App() {
             <div className="flex items-center gap-3">
               <button 
                 onClick={handleCopySummary}
-                className="p-2 -mr-1 text-ink/80 hover:text-accent transition-all hover:scale-110 active:scale-95"
+                className="p-2 -mr-1 text-subtle/40 hover:text-accent transition-colors"
               >
                 <FileText size={18} />
               </button>
               <button 
-                onClick={() => setIsDuplicateDayModalOpen(true)}
-                className="p-2 -mr-1 text-ink/80 hover:text-accent transition-all hover:scale-110 active:scale-95"
-              >
-                <Copy size={18} />
-              </button>
-              <button 
-                onClick={() => setIsExportModalOpen(true)}
-                className="p-2 -mr-1 text-ink/80 hover:text-accent transition-all hover:scale-110 active:scale-95"
-                title="Export"
-              >
-                <Download size={18} />
-              </button>
-              <button 
                 onClick={() => setView('statistics')}
                 className={cn(
-                  "p-2 -mr-1 transition-all hover:scale-110 active:scale-95",
-                  view === 'statistics' ? "text-accent" : "text-ink/80 hover:text-accent"
+                  "p-2 -mr-1 transition-colors",
+                  view === 'statistics' ? "text-accent" : "text-subtle/40 hover:text-accent"
                 )}
               >
                 <BarChart2 size={18} />
               </button>
               <button 
+                onClick={() => setView('planner')}
+                className={cn(
+                  "p-2 -mr-1 transition-colors",
+                  view === 'planner' ? "text-accent" : "text-subtle/40 hover:text-accent"
+                )}
+              >
+                <ShoppingCart size={18} />
+              </button>
+              <button 
                 onClick={() => setView(view === 'timeline' ? 'database' : 'timeline')}
                 className={cn(
-                  "p-2 -mr-1 transition-all hover:scale-110 active:scale-95",
-                  view === 'database' ? "text-accent" : "text-ink/80 hover:text-accent"
+                  "p-2 -mr-1 transition-colors",
+                  view === 'database' ? "text-accent" : "text-subtle/40 hover:text-accent"
                 )}
               >
                 {view === 'timeline' ? <Database size={18} /> : <Clock size={18} />}
@@ -790,11 +794,14 @@ export default function App() {
       )}>
         {view === 'statistics' ? (
           <StatisticsView 
-            stats={statsCache[`${statsRange.start}_${statsRange.end}`] || null}
+            meals={statsMeals} 
+            foods={foods} 
+            days={statsDays} 
+            setDays={setStatsDays}
             isLoading={isStatsLoading}
-            onRangeChange={(start, end) => setStatsRange({ start, end })}
-            currentRange={statsRange}
           />
+        ) : view === 'planner' ? (
+          <WeeklyPlannerView foods={foods} user={user!} />
         ) : view === 'timeline' ? (
           <>
             {/* === MOBILE: Chronological list === */}
@@ -806,7 +813,7 @@ export default function App() {
               ) : sortedMeals.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-20 px-6 text-center">
                   <div className="w-16 h-16 bg-gray-50 rounded-3xl flex items-center justify-center mb-6">
-                    <Clock size={32} className="text-ink/20" />
+                    <Clock size={32} className="text-subtle/30" />
                   </div>
                   <h3 className="text-ink font-bold text-lg mb-2">No meals logged yet</h3>
                   <p className="text-subtle text-sm max-w-[200px] leading-relaxed mb-8">
@@ -901,7 +908,7 @@ export default function App() {
               {sortedMeals.length === 0 && !isLoading ? (
                 <div className="flex flex-col items-center justify-center py-32 text-center">
                   <div className="w-20 h-20 bg-gray-50 rounded-[2.5rem] flex items-center justify-center mb-8">
-                    <Clock size={40} className="text-ink/10" />
+                    <Clock size={40} className="text-subtle/20" />
                   </div>
                   <h3 className="text-ink font-bold text-xl mb-3">No meals tracked for this day</h3>
                   <p className="text-subtle text-sm max-w-[280px] leading-relaxed mb-10">
@@ -971,6 +978,10 @@ export default function App() {
                                 setIsMealModalOpen(true);
                               }}
                               onDelete={() => handleDeleteMeal(String(meal.id))}
+                              onDuplicate={() => {
+                                setMealToDuplicate(meal);
+                                setIsDuplicateModalOpen(true);
+                              }}
                             />
                           </React.Fragment>
                         );
@@ -1005,8 +1016,9 @@ export default function App() {
               {selectedMeal ? (() => {
                 const meal = selectedMeal;
                 const mealItems = (meal.items || []).map(item => ({
-                  food: getFoodOrUnknown(foods, item.foodId),
-                  quantity: item.quantityGrams
+                  food: getFoodOrUnknown(foods, item.foodId || ''),
+                  quantity: item.quantityGrams,
+                  customMacros: item
                 }));
                 const totals = calculateMealTotals(mealItems);
 
@@ -1020,21 +1032,21 @@ export default function App() {
                       <div className="flex gap-2">
                         <button
                           onClick={() => { setEditingMeal(meal); setIsMealModalOpen(true); }}
-                          className="p-2 text-ink/80 hover:text-ink hover:bg-black/5 rounded-lg transition-all hover:scale-110 active:scale-90"
+                          className="p-2 text-subtle hover:text-ink hover:bg-black/5 rounded-lg transition-all active:scale-90"
                           title="Edit"
                         >
                           <Edit2 size={18} />
                         </button>
                         <button
                           onClick={() => { setMealToDuplicate(meal); setIsDuplicateModalOpen(true); }}
-                          className="p-2 text-ink/80 hover:text-ink hover:bg-black/5 rounded-lg transition-all hover:scale-110 active:scale-90"
+                          className="p-2 text-subtle hover:text-ink hover:bg-black/5 rounded-lg transition-all active:scale-90"
                           title="Duplicate"
                         >
                           <Copy size={18} />
                         </button>
                         <button
                           onClick={() => handleDeleteMeal(meal.id)}
-                          className="p-2 text-ink/80 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all hover:scale-110 active:scale-90"
+                          className="p-2 text-subtle hover:text-red-500 hover:bg-red-50 rounded-lg transition-all active:scale-90"
                           title="Delete"
                         >
                           <Trash2 size={18} />
@@ -1064,6 +1076,25 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* Quick Add Input */}
+                    <form onSubmit={handleQuickAdd} className="relative group/qa">
+                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/30 group-focus-within/qa:text-accent transition-colors">
+                        <Plus size={16} strokeWidth={3} />
+                      </div>
+                      <input 
+                        type="text"
+                        value={quickAddInput}
+                        onChange={e => setQuickAddInput(e.target.value)}
+                        placeholder="Quick Add (e.g. rice 100g)"
+                        className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-border rounded-xl text-[13px] font-medium focus:bg-white focus:ring-2 focus:ring-accent/20 focus:border-accent transition-all outline-none"
+                      />
+                      {quickAddInput && (
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-black text-subtle/40 uppercase tracking-widest">
+                          Press Enter
+                        </div>
+                      )}
+                    </form>
+
                     <div className="bg-[#F1F5F9] p-4 rounded-xl space-y-2">
                        <div className="flex justify-between text-[13px]">
                          <span className="text-[#64748B]">Soluble Fiber</span>
@@ -1083,8 +1114,8 @@ export default function App() {
                       {mealItems.map((item, i) => (
                         <li key={i} className="flex justify-between items-center py-3 border-b border-border last:border-0">
                           <div className="flex-1 min-w-0 pr-4">
-                            <h4 className={cn("text-[14px]", !item.food.isDeleted ? "font-semibold" : "text-red-500 italic")}>
-                              {item.food.name_hu}
+                            <h4 className={cn("text-[14px]", (!item.food.isDeleted || item.customMacros?.is_custom) ? "font-semibold" : "text-red-500 italic")}>
+                              {item.customMacros?.is_custom ? item.customMacros.name : item.food.name_hu}
                               {item.food.brand && <span className="text-[11px] text-gray-400 font-normal ml-1">({item.food.brand})</span>}
                               {item.food.name_en && <span className="text-xs text-gray-500 ml-1 font-normal opacity-70">({item.food.name_en})</span>}
                               {item.food.gi != null && <span className={cn("ml-2 font-bold", item.food.gi < 56 ? "text-green-600" : item.food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {item.food.gi})</span>}
@@ -1217,7 +1248,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <DatePickerModal 
+      <DatePickerModal
         isOpen={isDatePickerOpen}
         onClose={() => setIsDatePickerOpen(false)}
         selectedDate={selectedDate}
@@ -1264,7 +1295,7 @@ function UpdatePassword({ onComplete }: { onComplete: () => void }) {
           <div className="space-y-1">
             <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Password</label>
             <div className="relative">
-              <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-ink/40" size={18} />
+              <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
               <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-ink" />
             </div>
           </div>
@@ -1376,7 +1407,7 @@ function Login() {
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Email Address</label>
               <div className="relative">
-                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-ink/40" size={18} />
+                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
                 <input
                   type="email"
                   required
@@ -1392,7 +1423,7 @@ function Login() {
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Password</label>
                 <div className="relative">
-                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-ink/40" size={18} />
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-subtle/50" size={18} />
                   <input
                     type="password"
                     required
@@ -1479,9 +1510,9 @@ function StatCard({ label, value, unit, highlight = false, small = false }: Stat
         "font-[800] tracking-tight text-ink", 
         small ? "text-[20px]" : "text-[28px]"
       )}>
-        {value}<span className={cn("font-semibold text-ink/60 ml-[2px]", small ? "text-[13px]" : "text-[16px]")}>{unit}</span>
+        {value}<span className={cn("font-semibold text-subtle ml-[2px]", small ? "text-[13px]" : "text-[16px]")}>{unit}</span>
       </span>
-      <span className="text-[10px] uppercase text-ink/50 font-bold tracking-widest">{label}</span>
+      <span className="text-[10px] uppercase text-subtle/70 font-bold tracking-widest">{label}</span>
     </div>
   );
 }
@@ -1494,7 +1525,7 @@ interface DuplicateMealModalProps {
 }
 
 function DuplicateMealModal({ isOpen, onClose, meal, onDuplicate }: DuplicateMealModalProps) {
-  const [targetDate, setTargetDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [targetDate, setTargetDate] = useState(format(addDays(new Date(), 1), 'yyyy-MM-dd'));
   const [targetTime, setTargetTime] = useState(meal.time);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -1528,7 +1559,7 @@ function DuplicateMealModal({ isOpen, onClose, meal, onDuplicate }: DuplicateMea
             <Copy size={32} strokeWidth={2.5} />
           </div>
           <h3 className="text-[24px] font-[800] tracking-[-1px] leading-tight">Duplicate Meal</h3>
-          <p className="text-subtle text-[14px]">Copying "{meal.name}"</p>
+          <p className="text-subtle text-[14px]">Copying "{meal.name}" to another date</p>
         </div>
 
         <div className="space-y-6">
@@ -1546,7 +1577,7 @@ function DuplicateMealModal({ isOpen, onClose, meal, onDuplicate }: DuplicateMea
           </div>
 
           <div className="space-y-1">
-            <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Time</label>
+            <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Target Time</label>
             <div className="relative">
               <Clock className="absolute left-4 top-1/2 -translate-y-1/2 text-ink/40" size={18} />
               <input
@@ -1701,8 +1732,9 @@ function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete, onDuplic
   const isNow = Math.abs(nowMinutes - mealMinutes) < 30;
 
   const mealItems = (meal.items || []).map(item => ({
-    food: getFoodOrUnknown(foods, item.foodId),
-    quantity: item.quantityGrams
+    food: getFoodOrUnknown(foods, item.foodId || ''),
+    quantity: item.quantityGrams,
+    customMacros: item
   }));
   const totals = calculateMealTotals(mealItems);
 
@@ -1790,8 +1822,8 @@ function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete, onDuplic
                 {mealItems.map((item, i) => (
                   <li key={i} className="flex justify-between items-center py-2 border-b border-gray-100 last:border-0">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className={cn('text-[13px] font-semibold', item.food.isDeleted && 'text-red-400 italic')}>
-                        {item.food.name_hu}
+                      <span className={cn('text-[13px] font-semibold', (item.food.isDeleted && !item.customMacros?.is_custom) && 'text-red-400 italic')}>
+                        {item.customMacros?.is_custom ? item.customMacros.name : item.food.name_hu}
                         {item.food.brand && <span className="text-[11px] text-gray-400 font-normal ml-1">({item.food.brand})</span>}
                         {item.food.name_en && (
                           <span className="text-gray-500 font-normal ml-1 text-xs">({item.food.name_en})</span>
@@ -1853,8 +1885,9 @@ interface MealBlockProps {
 
 function MealBlock({ meal, foods, isSelected, onClick, onEdit, onDelete, onDuplicate }: MealBlockProps) {
   const mealItems = (meal.items || []).map(item => ({
-    food: getFoodOrUnknown(foods, item.foodId),
-    quantity: item.quantityGrams
+    food: getFoodOrUnknown(foods, item.foodId || ''),
+    quantity: item.quantityGrams,
+    customMacros: item
   }));
 
   const totals = calculateMealTotals(mealItems);
@@ -1890,21 +1923,21 @@ function MealBlock({ meal, foods, isSelected, onClick, onEdit, onDelete, onDupli
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             onClick={(e) => { e.stopPropagation(); onEdit(); }}
-            className="p-1.5 text-ink/80 hover:text-ink hover:bg-black/5 rounded-md transition-all hover:scale-110 active:scale-90"
+            className="p-1.5 text-subtle hover:text-ink hover:bg-black/5 rounded-md transition-all active:scale-90"
             title="Edit Meal"
           >
             <Edit2 size={16} />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); onDuplicate(); }}
-            className="p-1.5 text-ink/80 hover:text-ink hover:bg-black/5 rounded-md transition-all hover:scale-110 active:scale-90"
+            className="p-1.5 text-subtle hover:text-ink hover:bg-black/5 rounded-md transition-all active:scale-90"
             title="Duplicate Meal"
           >
             <Copy size={16} />
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            className="p-1.5 text-ink/80 hover:text-red-500 hover:bg-red-50 rounded-md transition-all hover:scale-110 active:scale-90"
+            className="p-1.5 text-subtle hover:text-red-500 hover:bg-red-50 rounded-md transition-all active:scale-90"
             title="Delete Meal"
           >
             <Trash2 size={16} />
@@ -1931,6 +1964,15 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
   const [search, setSearch] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isManualMode, setIsManualMode] = useState(false);
+  const [manualForm, setManualForm] = useState({
+    name: '',
+    calories: '',
+    protein: '',
+    carbs: '',
+    fat: '',
+    fiber: ''
+  });
   const quantityRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
@@ -1974,8 +2016,9 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
       return;
     }
     
-    // Strict parsing & merging duplicates
-    const finalItemsMap = new Map<string, number>();
+    // Separate custom items and merge regular items
+    const mergedRegularItemsMap = new Map<string, number>();
+    const customItems: any[] = [];
 
     for (const item of items) {
       const qty = Number(item.quantityGrams);
@@ -1983,12 +2026,19 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
         setErrorMsg("All foods must have a valid quantity greater than 0g.");
         return;
       }
-      finalItemsMap.set(item.foodId, (finalItemsMap.get(item.foodId) || 0) + qty);
+      
+      if (item.is_custom) {
+        customItems.push(item);
+      } else if (item.foodId) {
+        mergedRegularItemsMap.set(item.foodId, (mergedRegularItemsMap.get(item.foodId) || 0) + qty);
+      }
     }
 
-    const mergedItems = Array.from(finalItemsMap.entries()).map(([foodId, quantityGrams]) => ({
+    const mergedRegularItems = Array.from(mergedRegularItemsMap.entries()).map(([foodId, quantityGrams]) => ({
       foodId, quantityGrams
     }));
+
+    const finalItems = [...mergedRegularItems, ...customItems];
 
     setIsSaving(true);
     try {
@@ -1996,7 +2046,7 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
         ...(editingMeal ? { id: editingMeal.id } : {}),
         name: trimmedName,
         time,
-        items: mergedItems
+        items: finalItems
       } as Meal);
     } catch (err: any) {
       setErrorMsg(getFriendlyErrorMessage(err));
@@ -2049,10 +2099,35 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
     setItems(items.map((item, i) => i === index ? { ...item, quantityGrams: val } : item));
   };
 
+  const handleAddManual = () => {
+    if (!manualForm.name || !manualForm.calories || !manualForm.protein || !manualForm.carbs || !manualForm.fat) {
+      setErrorMsg("Please fill in all macro fields for manual entry.");
+      return;
+    }
+    
+    const newItem = {
+      foodId: null,
+      quantityGrams: 100, // Manual items are usually absolute, we set 100 as base
+      name: manualForm.name,
+      calories: Number(manualForm.calories),
+      protein: Number(manualForm.protein),
+      carbs: Number(manualForm.carbs),
+      fat: Number(manualForm.fat),
+      fiber: Number(manualForm.fiber || 0),
+      is_custom: true
+    };
+    
+    setItems(prev => [...prev, newItem]);
+    setManualForm({ name: '', calories: '', protein: '', carbs: '', fat: '', fiber: '' });
+    setIsManualMode(false);
+    setErrorMsg(null);
+  };
+
   const mealTotals = useMemo(() => {
     const mealItems = items.map(item => ({
-      food: getFoodOrUnknown(foods, item.foodId),
-      quantity: Number(item.quantityGrams) // Ensure numbers
+      food: item.is_custom ? undefined : getFoodOrUnknown(foods, item.foodId),
+      quantity: Number(item.quantityGrams),
+      customMacros: item
     }));
     return calculateMealTotals(mealItems);
   }, [items, foods]);
@@ -2102,60 +2177,99 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
           </div>
 
           <div className="space-y-4">
-            <div className="space-y-1">
-              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Add Foods</label>
-              <div className="relative z-[130]">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-                <input
-                  type="text"
-                  autoFocus
-                  value={search}
-                  onChange={e => setSearch(e.target.value)}
-                  onKeyDown={handleSearchKeyDown}
-                  placeholder="Search database..."
-                  className="w-full pl-12 pr-4 py-3 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500 transition-all"
-                />
-                {search && (
-                  <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-[0_15px_60px_-15px_rgba(0,0,0,0.3)] border border-gray-100 z-[140] max-h-[300px] overflow-y-auto">
-                    {filteredFoods.map(food => (
-                      <button
-                        type="button"
-                        key={food.id}
-                        onClick={() => addItem(food)}
-                        className="w-full px-4 py-3 text-left hover:bg-green-50 focus:bg-green-50 flex justify-between items-center transition-all active:scale-[0.98]"
-                      >
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="font-medium text-sm text-ink">
-                            {food.name_hu}
-                            {food.brand && <span className="text-[11px] text-gray-400 font-normal ml-1">({food.brand})</span>}
-                            {food.gi != null && <span className={cn("ml-2 font-bold", food.gi < 56 ? "text-green-600" : food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {food.gi})</span>}
-                          </span>
-                        </div>
-                        <div className="flex flex-col items-end gap-1 text-xs font-semibold text-gray-400">
-                          <span className="bg-gray-100 px-2 py-0.5 rounded text-ink">{Math.round(food.calories)} kcal • {Math.round(food.protein)}P {Math.round(food.carbs)}C {Math.round(food.fat)}F <span className="font-normal opacity-70">/ 100g</span></span>
-                          <div className="flex gap-2">
-                            <span className="bg-gray-50 px-2 py-0.5 rounded">{food.total_fiber}g fiber <span className="font-normal opacity-70">/ 100g</span></span>
-                            {food.gi != null && food.carbs != null && (
-                              <span className="bg-accent/5 text-accent px-2 py-0.5 rounded">GL: {Math.round((food.gi * food.carbs * 100) / 10000)} <span className="font-normal opacity-70">/ 100g</span></span>
-                            )}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                    {filteredFoods.length === 0 && (
-                      <div className="px-5 py-6 text-center text-gray-400 text-sm italic w-full">
-                         <div className="inline-block p-3 outline-1 outline-dashed outline-gray-200 rounded-full mb-3 opacity-50"><Search size={20} /></div>
-                         <p>No matching foods found</p>
-                      </div>
-                    )}
-                  </div>
-                )}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Add Foods</label>
+                <div className="flex bg-gray-100 p-0.5 rounded-lg">
+                  <button type="button" onClick={() => setIsManualMode(false)} className={cn("px-3 py-1 text-[10px] font-bold rounded-md transition-all", !isManualMode ? "bg-white text-ink shadow-sm" : "text-subtle")}>DATABASE</button>
+                  <button type="button" onClick={() => setIsManualMode(true)} className={cn("px-3 py-1 text-[10px] font-bold rounded-md transition-all", isManualMode ? "bg-white text-ink shadow-sm" : "text-subtle")}>MANUAL</button>
+                </div>
               </div>
+              
+              {!isManualMode ? (
+                <div className="relative z-[130]">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                  <input
+                    type="text"
+                    autoFocus
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    onKeyDown={handleSearchKeyDown}
+                    placeholder="Search database..."
+                    className="w-full pl-12 pr-4 py-3 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500 transition-all"
+                  />
+                  {search && (
+                    <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-[0_15px_60px_-15px_rgba(0,0,0,0.3)] border border-gray-100 z-[140] max-h-[300px] overflow-y-auto">
+                      {filteredFoods.map(food => (
+                        <button
+                          type="button"
+                          key={food.id}
+                          onClick={() => addItem(food)}
+                          className="w-full px-4 py-3 text-left hover:bg-green-50 focus:bg-green-50 flex justify-between items-center transition-all active:scale-[0.98]"
+                        >
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="font-medium text-sm text-ink">
+                              {food.name_hu}
+                              {food.brand && <span className="text-[11px] text-gray-400 font-normal ml-1">({food.brand})</span>}
+                              {food.gi != null && <span className={cn("ml-2 font-bold", food.gi < 56 ? "text-green-600" : food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {food.gi})</span>}
+                            </span>
+                          </div>
+                          <div className="flex flex-col items-end gap-1 text-xs font-semibold text-gray-400">
+                            <span className="bg-gray-100 px-2 py-0.5 rounded text-ink">{Math.round(food.calories)} kcal • {Math.round(food.protein)}P {Math.round(food.carbs)}C {Math.round(food.fat)}F <span className="font-normal opacity-70">/ 100g</span></span>
+                            <div className="flex gap-2">
+                              <span className="bg-gray-50 px-2 py-0.5 rounded">{food.total_fiber}g fiber <span className="font-normal opacity-70">/ 100g</span></span>
+                              {food.gi != null && food.carbs != null && (
+                                <span className="bg-accent/5 text-accent px-2 py-0.5 rounded">GL: {Math.round((food.gi * food.carbs * 100) / 10000)} <span className="font-normal opacity-70">/ 100g</span></span>
+                              )}
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                      {filteredFoods.length === 0 && (
+                        <div className="px-5 py-6 text-center text-gray-400 text-sm italic w-full">
+                           <div className="inline-block p-3 outline-1 outline-dashed outline-gray-200 rounded-full mb-3 opacity-50"><Search size={20} /></div>
+                           <p>No matching foods found</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="bg-gray-50 p-4 rounded-2xl border border-border space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Food Name</label>
+                    <input type="text" value={manualForm.name} onChange={e => setManualForm({...manualForm, name: e.target.value})} placeholder="e.g. Home-made ice cream" className="w-full px-4 py-2.5 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Kcal</label>
+                      <input type="number" value={manualForm.calories} onChange={e => setManualForm({...manualForm, calories: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Prot (g)</label>
+                      <input type="number" value={manualForm.protein} onChange={e => setManualForm({...manualForm, protein: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Carb (g)</label>
+                      <input type="number" value={manualForm.carbs} onChange={e => setManualForm({...manualForm, carbs: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fat (g)</label>
+                      <input type="number" value={manualForm.fat} onChange={e => setManualForm({...manualForm, fat: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-green-600 uppercase tracking-widest">Fiber (g)</label>
+                      <input type="number" value={manualForm.fiber} onChange={e => setManualForm({...manualForm, fiber: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                  </div>
+                  <button type="button" onClick={handleAddManual} className="w-full py-2.5 bg-accent text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-green-700 transition-all active:scale-95 shadow-sm">Add Custom Item</button>
+                </div>
+              )}
             </div>
 
             <div className="space-y-3">
               {items.map((item, i) => {
-                const food = getFoodOrUnknown(foods, item.foodId);
+                const food = item.is_custom ? { name_hu: item.name, calories: item.calories, protein: item.protein, carbs: item.carbs, fat: item.fat, total_fiber: item.fiber || 0 } : getFoodOrUnknown(foods, item.foodId);
                 return (
                   <div key={i} className="flex items-center gap-3 bg-gray-50/80 p-3 rounded-xl border border-transparent hover:border-gray-200 hover:shadow-sm hover:bg-white transition-all group">
                     <div>
@@ -2170,7 +2284,7 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                       </div>
                       <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">
                         <span className="text-green-600">{(food.total_fiber * Number(item.quantityGrams) / 100).toFixed(1)}g</span> Fiber
-                        {food.gi != null && (
+                        {food.gi != null && !item.is_custom && (
                           <span className="ml-2 text-accent">GL: {Math.round((food.gi * food.carbs * Number(item.quantityGrams)) / 10000)}</span>
                         )}
                       </div>

@@ -208,8 +208,9 @@ const aggregateByDay = (meals: Meal[], foods: Food[]): Record<string, DailyMetri
     }
 
     const mealItems = (meal.items || []).map(item => ({
-      food: getFoodOrUnknown(foods, item.foodId),
-      quantity: item.quantityGrams
+      food: item.foodId ? getFoodOrUnknown(foods, item.foodId) : undefined,
+      quantity: item.quantityGrams,
+      customMacros: item
     }));
     const totals = calculateMealTotals(mealItems);
 
@@ -225,7 +226,7 @@ const aggregateByDay = (meals: Meal[], foods: Food[]): Record<string, DailyMetri
 
     // Check for missing fiber ratio data
     mealItems.forEach(it => {
-      if (it.food.total_fiber > 0 && it.food.soluble_fiber === 0 && it.food.insoluble_fiber === 0) {
+      if (it.food && it.food.total_fiber > 0 && it.food.soluble_fiber === 0 && it.food.insoluble_fiber === 0) {
         (dayGroups[dateKey] as any).ratioIsVisible = false;
       }
     });
@@ -363,8 +364,9 @@ const calculateMealDistribution = (meals: Meal[], foods: Food[]) => {
     const normalized = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
     
     const items = (meal.items || []).map(it => ({
-      food: getFoodOrUnknown(foods, it.foodId),
-      quantity: it.quantityGrams
+      food: it.foodId ? getFoodOrUnknown(foods, it.foodId) : undefined,
+      quantity: it.quantityGrams,
+      customMacros: it
     }));
     const fiber = calculateMealTotals(items).total_fiber;
     dist[normalized] = (dist[normalized] || 0) + fiber;
@@ -385,15 +387,24 @@ const findTopSourcesForAllMetrics = (meals: Meal[], foods: Food[]) => {
 
     meals.forEach(meal => {
       (meal.items || []).forEach(item => {
-        const food = getFoodOrUnknown(foods, item.foodId);
-        const foodName = food.name_hu || 'Unknown';
+        const food = item.foodId ? getFoodOrUnknown(foods, item.foodId) : null;
+        const foodName = item.is_custom ? (item.name || 'Custom') : (food?.name_hu || 'Unknown');
+        const factor = item.quantityGrams / 100;
         
         let value = 0;
-        if (metric === 'fiber') value = (food.total_fiber * item.quantityGrams) / 100;
-        else if (metric === 'calories') value = (food.calories * item.quantityGrams) / 100;
-        else if (metric === 'protein') value = (food.protein * item.quantityGrams) / 100;
-        else if (metric === 'carbs') value = (food.carbs * item.quantityGrams) / 100;
-        else if (metric === 'fat') value = (food.fat * item.quantityGrams) / 100;
+        if (item.is_custom) {
+          if (metric === 'calories') value = (item.calories || 0) * factor;
+          else if (metric === 'protein') value = (item.protein || 0) * factor;
+          else if (metric === 'carbs') value = (item.carbs || 0) * factor;
+          else if (metric === 'fat') value = (item.fat || 0) * factor;
+          else if (metric === 'fiber') value = 0; // Quick add doesn't support fiber yet
+        } else if (food) {
+          if (metric === 'fiber') value = (food.total_fiber * item.quantityGrams) / 100;
+          else if (metric === 'calories') value = (food.calories * item.quantityGrams) / 100;
+          else if (metric === 'protein') value = (food.protein * item.quantityGrams) / 100;
+          else if (metric === 'carbs') value = (food.carbs * item.quantityGrams) / 100;
+          else if (metric === 'fat') value = (food.fat * item.quantityGrams) / 100;
+        }
 
         contribution[foodName] = (contribution[foodName] || 0) + value;
         if (!frequency[foodName]) frequency[foodName] = new Set();
@@ -421,12 +432,14 @@ const calculateVegetableStats = (meals: Meal[], foods: Food[]) => {
   
   meals.forEach(meal => {
     (meal.items || []).forEach(item => {
-      const food = getFoodOrUnknown(foods, item.foodId);
-      if (food.category === 'vegetable') {
-        const name = food.name_hu || 'Unknown';
-        if (!stats[name]) stats[name] = { count: 0, grams: 0 };
-        stats[name].count += 1;
-        stats[name].grams += item.quantityGrams;
+      if (item.foodId) {
+        const food = getFoodOrUnknown(foods, item.foodId);
+        if (food.category === 'vegetable') {
+          const name = food.name_hu || 'Unknown';
+          if (!stats[name]) stats[name] = { count: 0, grams: 0 };
+          stats[name].count += 1;
+          stats[name].grams += item.quantityGrams;
+        }
       }
     });
   });
@@ -471,8 +484,9 @@ const findHighlights = (meals: Meal[], foods: Food[]): ProcessedStats['highlight
 
   meals.forEach(meal => {
     const items = (meal.items || []).map(it => ({
-      food: getFoodOrUnknown(foods, it.foodId),
-      quantity: it.quantityGrams
+      food: it.foodId ? getFoodOrUnknown(foods, it.foodId) : undefined,
+      quantity: it.quantityGrams,
+      customMacros: it
     }));
     const totals = calculateMealTotals(items);
 
@@ -519,21 +533,29 @@ export const buildExportRows = (meals: Meal[], foods: Food[]): string[][] => {
   meals.forEach(meal => {
     const date = format(parseISO(meal.created_at || ''), 'yyyy-MM-dd');
     (meal.items || []).forEach(item => {
-      const food = getFoodOrUnknown(foods, item.foodId);
+      const food = item.foodId ? getFoodOrUnknown(foods, item.foodId) : null;
       const factor = item.quantityGrams / 100;
       
+      const itemName = item.is_custom ? (item.name || 'Custom') : (food?.name_hu || 'Unknown');
+      const itemFiber = item.is_custom ? 0 : ((food?.total_fiber || 0) * factor);
+      const itemGL = item.is_custom ? 0 : ((food ? (food.gi * food.carbs * factor) / 100 : 0));
+      const itemCals = item.is_custom ? (item.calories || 0) * factor : ((food?.calories || 0) * factor);
+      const itemPro = item.is_custom ? (item.protein || 0) * factor : ((food?.protein || 0) * factor);
+      const itemCarbs = item.is_custom ? (item.carbs || 0) * factor : ((food?.carbs || 0) * factor);
+      const itemFat = item.is_custom ? (item.fat || 0) * factor : ((food?.fat || 0) * factor);
+
       rows.push([
         date,
         meal.time,
         meal.name,
-        food.name_hu,
+        itemName,
         item.quantityGrams.toString(),
-        (food.total_fiber * factor).toFixed(1),
-        ((food.gi * food.carbs * factor) / 100).toFixed(1),
-        (food.calories * factor).toFixed(0),
-        (food.protein * factor).toFixed(1),
-        (food.carbs * factor).toFixed(1),
-        (food.fat * factor).toFixed(1)
+        itemFiber.toFixed(1),
+        itemGL.toFixed(1),
+        itemCals.toFixed(0),
+        itemPro.toFixed(1),
+        itemCarbs.toFixed(1),
+        itemFat.toFixed(1)
       ]);
     });
   });

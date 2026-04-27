@@ -38,7 +38,7 @@ export default function UnifiedExportModal({
       // 1. Fetch data for the specified range
       const { data, error } = await supabase
         .from('meals')
-        .select('*, meal_items(food_id, grams)')
+        .select('*, meal_items(food_id, grams, name, calories, protein, carbs, fat, is_custom)')
         .eq('user_id', user_id)
         .gte('created_at', `${range.start}T00:00:00Z`)
         .lte('created_at', `${range.end}T23:59:59Z`);
@@ -54,7 +54,13 @@ export default function UnifiedExportModal({
         ...m,
         items: (m.meal_items || []).map((mi: any) => ({
           foodId: mi.food_id,
-          quantityGrams: mi.grams
+          quantityGrams: mi.grams,
+          name: mi.name,
+          calories: mi.calories,
+          protein: mi.protein,
+          carbs: mi.carbs,
+          fat: mi.fat,
+          is_custom: mi.is_custom
         }))
       }));
 
@@ -79,7 +85,7 @@ export default function UnifiedExportModal({
     try {
       const { data, error } = await supabase
         .from('meals')
-        .select('*, meal_items(food_id, grams)')
+        .select('*, meal_items(food_id, grams, name, calories, protein, carbs, fat, is_custom)')
         .eq('user_id', user_id)
         .gte('created_at', `${range.start}T00:00:00Z`)
         .lte('created_at', `${range.end}T23:59:59Z`);
@@ -94,7 +100,13 @@ export default function UnifiedExportModal({
         ...m,
         items: (m.meal_items || []).map((mi: any) => ({
           foodId: mi.food_id,
-          quantityGrams: mi.grams
+          quantityGrams: mi.grams,
+          name: mi.name,
+          calories: mi.calories,
+          protein: mi.protein,
+          carbs: mi.carbs,
+          fat: mi.fat,
+          is_custom: mi.is_custom
         }))
       }));
 

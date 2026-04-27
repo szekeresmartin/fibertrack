@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { Food } from '../types';
+import { Food, MealItem } from '../types';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -44,21 +44,50 @@ export function calculateItemGL(food: Food, quantity: number): number {
   return (gi * carbs * quantity) / 10000;
 }
 
-export function calculateMealTotals(items: { food: Food; quantity: number }[]) {
+export function calculateMealTotals(items: { food?: Food; quantity: number; customMacros?: Partial<MealItem> }[]) {
   return items.reduce(
     (acc, item) => {
       const factor = item.quantity / 100;
-      const itemGL = calculateItemGL(item.food, item.quantity);
-      const isVegetable = item.food.category === 'vegetable';
+      
+      // Prioritize custom macros if available (Quick Add)
+      if (item.customMacros?.is_custom) {
+        return {
+          calories: acc.calories + (item.customMacros.calories || 0) * factor,
+          carbs: acc.carbs + (item.customMacros.carbs || 0) * factor,
+          protein: acc.protein + (item.customMacros.protein || 0) * factor,
+          fat: acc.fat + (item.customMacros.fat || 0) * factor,
+          soluble_fiber: acc.soluble_fiber + 0,
+          insoluble_fiber: acc.insoluble_fiber + 0,
+          total_fiber: acc.total_fiber + (item.customMacros.fiber || 0) * factor,
+          gl: acc.gl + 0, // GL requires GI and carbs
+          vegetable_grams: acc.vegetable_grams + 0,
+        };
+      }
+
+      // Standard food logic
+      let foodToUse = item.food;
+      
+      // Fallback to joinedFood if primary food lookup failed (Unknown) or is missing
+      if ((!foodToUse || foodToUse.id === 'unknown' || foodToUse.id === item.customMacros?.foodId) && item.customMacros?.joinedFood) {
+        foodToUse = item.customMacros.joinedFood;
+      }
+
+      if (!foodToUse || (foodToUse.id === 'unknown' && !item.customMacros?.is_custom)) {
+        // If still unknown and not custom, we might show 0 or the unknown object
+        if (!foodToUse) return acc;
+      }
+      
+      const itemGL = calculateItemGL(foodToUse, item.quantity);
+      const isVegetable = foodToUse.category === 'vegetable';
 
       return {
-        calories: acc.calories + item.food.calories * factor,
-        carbs: acc.carbs + item.food.carbs * factor,
-        protein: acc.protein + item.food.protein * factor,
-        fat: acc.fat + item.food.fat * factor,
-        soluble_fiber: acc.soluble_fiber + item.food.soluble_fiber * factor,
-        insoluble_fiber: acc.insoluble_fiber + item.food.insoluble_fiber * factor,
-        total_fiber: acc.total_fiber + item.food.total_fiber * factor,
+        calories: acc.calories + (foodToUse.calories || 0) * factor,
+        carbs: acc.carbs + (foodToUse.carbs || 0) * factor,
+        protein: acc.protein + (foodToUse.protein || 0) * factor,
+        fat: acc.fat + (foodToUse.fat || 0) * factor,
+        soluble_fiber: acc.soluble_fiber + (foodToUse.soluble_fiber || 0) * factor,
+        insoluble_fiber: acc.insoluble_fiber + (foodToUse.insoluble_fiber || 0) * factor,
+        total_fiber: acc.total_fiber + (foodToUse.total_fiber || 0) * factor,
         gl: acc.gl + itemGL,
         vegetable_grams: acc.vegetable_grams + (isVegetable ? item.quantity : 0),
       };

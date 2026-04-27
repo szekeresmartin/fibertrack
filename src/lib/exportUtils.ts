@@ -42,24 +42,27 @@ export const downloadDayAsCSV = (
   // Logic: Each row = one food item
   meals.forEach((meal) => {
     (meal.items || []).forEach((item) => {
-      const food = getFoodOrUnknown(foods, item.foodId);
+      const isCustom = item.is_custom;
+      const food = item.foodId ? getFoodOrUnknown(foods, item.foodId) : null;
       const factor = item.quantityGrams / 100;
       
-      const calories = (food.calories * factor);
-      const protein = (food.protein * factor);
-      const carbs = (food.carbs * factor);
-      const fat = (food.fat * factor);
-      const fiber = (food.total_fiber * factor);
-      const solubleFiber = ((food.soluble_fiber || 0) * factor);
-      const insolubleFiber = ((food.insoluble_fiber || 0) * factor);
-      const gl = calculateItemGL(food, item.quantityGrams);
+      const calories = isCustom ? (item.calories || 0) * factor : ((food?.calories || 0) * factor);
+      const protein = isCustom ? (item.protein || 0) * factor : ((food?.protein || 0) * factor);
+      const carbs = isCustom ? (item.carbs || 0) * factor : ((food?.carbs || 0) * factor);
+      const fat = isCustom ? (item.fat || 0) * factor : ((food?.fat || 0) * factor);
+      const fiber = isCustom ? 0 : ((food?.total_fiber || 0) * factor);
+      const solubleFiber = isCustom ? 0 : (((food?.soluble_fiber || 0) * factor));
+      const insolubleFiber = isCustom ? 0 : (((food?.insoluble_fiber || 0) * factor));
+      const gl = (isCustom || !food) ? 0 : calculateItemGL(food, item.quantityGrams);
+      const gi = isCustom ? 0 : (food?.gi || 0);
+      const itemName = isCustom ? (item.name || 'Custom') : (food?.name_hu || 'Unknown');
 
       const row = [
         dateStr,
         meal.id,
         meal.time,
         escapeCSV(meal.name),
-        escapeCSV(food.name_hu),
+        escapeCSV(itemName),
         item.quantityGrams.toString(),
         Math.round(calories).toString(),
         protein.toFixed(1),
@@ -68,7 +71,7 @@ export const downloadDayAsCSV = (
         fiber.toFixed(1),
         solubleFiber.toFixed(1),
         insolubleFiber.toFixed(1),
-        (food.gi || 0).toString(),
+        gi.toString(),
         gl.toFixed(1)
       ];
       rows.push(row);
@@ -108,8 +111,9 @@ export const generateDaySummaryText = (
   // We'll re-calculate here to keep exportUtils independent of App state structure
   const mealData = meals.map(meal => {
     const items = (meal.items || []).map(item => ({
-      food: getFoodOrUnknown(foods, item.foodId),
-      quantity: item.quantityGrams
+      food: item.foodId ? getFoodOrUnknown(foods, item.foodId) : undefined,
+      quantity: item.quantityGrams,
+      customMacros: item
     }));
     return {
       meal,
@@ -144,8 +148,9 @@ export const generateDaySummaryText = (
   sortedMealData.forEach(({ meal, items }) => {
     text += `${meal.time} ${meal.name}\n`;
     
-    items.forEach(({ food, quantity }) => {
-      text += `${food.name_hu} (${quantity}g)\n`;
+    items.forEach((it) => {
+      const name = it.customMacros?.is_custom ? it.customMacros.name : it.food?.name_hu;
+      text += `${name} (${it.quantity}g)\n`;
     });
 
     text += `\n`;
@@ -187,8 +192,9 @@ export const generateRangeSummaryText = (
     // Reuse the logic from generateDaySummaryText but for a pre-grouped set of meals
     const mealData = dayMeals.map(meal => {
       const items = (meal.items || []).map(item => ({
-        food: getFoodOrUnknown(foods, item.foodId),
-        quantity: item.quantityGrams
+        food: item.foodId ? getFoodOrUnknown(foods, item.foodId) : undefined,
+        quantity: item.quantityGrams,
+        customMacros: item
       }));
       return {
         meal,
@@ -222,8 +228,9 @@ export const generateRangeSummaryText = (
 
     sortedMealData.forEach(({ meal, items }) => {
       text += `${meal.time} ${meal.name}\n`;
-      items.forEach(({ food, quantity }) => {
-        text += `  - ${food.name_hu} (${quantity}g)\n`;
+      items.forEach((it) => {
+        const name = it.customMacros?.is_custom ? it.customMacros.name : it.food?.name_hu;
+        text += `  - ${name} (${it.quantity}g)\n`;
       });
       text += `\n`;
     });
@@ -232,6 +239,44 @@ export const generateRangeSummaryText = (
       text += `------------------------------------------\n\n`;
     }
   });
+
+  return text.trim();
+};
+
+/**
+ * Generates a clean text summary of the weekly plan.
+ */
+export const generateWeeklyPlanText = (
+  weekRange: string,
+  items: { name: string, grams: number }[],
+  totals: {
+    calories: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    total_fiber: number;
+    vegetable_count: number;
+  }
+): string => {
+  if (!items || items.length === 0) {
+    return `Weekly Plan (${weekRange})\n\nNo planned items`;
+  }
+
+  let text = `Weekly Plan (Week: ${weekRange})\n\n`;
+  text += `---\n\n`;
+
+  items.forEach(item => {
+    text += `${item.name} – ${item.grams}g\n`;
+  });
+
+  text += `\n---\n\n`;
+  text += `Totals:\n\n`;
+  text += `Calories: ${Math.round(totals.calories)} kcal\n`;
+  text += `Protein: ${Math.round(totals.protein)} g\n`;
+  text += `Carbs: ${Math.round(totals.carbs)} g\n`;
+  text += `Fat: ${Math.round(totals.fat)} g\n`;
+  text += `Fiber: ${totals.total_fiber.toFixed(1)} g\n`;
+  text += `Vegetables: ${totals.vegetable_count}\n`;
 
   return text.trim();
 };
