@@ -138,6 +138,8 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
   const [quickAddInput, setQuickAddInput] = useState('');
   const nowIndicatorRef = useRef<HTMLDivElement>(null);
+  const [weightLogs, setWeightLogs] = useState<{ id?: string, user_id: string, date: string, weight: number }[]>([]);
+  const [currentWeight, setCurrentWeight] = useState<string>('');
 
   const showToast = (text: string, type: 'success' | 'error') => {
     setToastMessage({ text, type });
@@ -169,6 +171,87 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const fetchWeightLogs = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('weight_logs')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('date', { ascending: true });
+        if (error) {
+          console.error('Supabase fetch weight logs error:', error);
+          if (error.code === '42P01') {
+            const localData = localStorage.getItem(`fibertrack_weights_${user.id}`);
+            if (localData) setWeightLogs(JSON.parse(localData));
+          }
+        } else if (data) {
+          console.log('Successfully loaded weight logs from Supabase:', data);
+          setWeightLogs(data);
+        }
+      } catch (err) {
+        console.error('Supabase weight fetch exception:', err);
+        const localData = localStorage.getItem(`fibertrack_weights_${user.id}`);
+        if (localData) setWeightLogs(JSON.parse(localData));
+      }
+    };
+    fetchWeightLogs();
+  }, [user]);
+
+  useEffect(() => {
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
+    const log = weightLogs.find(l => l.date === dateStr);
+    setCurrentWeight(log ? log.weight.toString() : '');
+  }, [selectedDate, weightLogs]);
+
+  useEffect(() => {
+    if (!currentWeight) return;
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
+    const log = weightLogs.find(l => l.date === dateStr);
+    if (log && log.weight.toString() === currentWeight) return;
+
+    const timer = setTimeout(() => {
+      const val = parseFloat(currentWeight);
+      if (!isNaN(val) && val > 0) {
+        handleSaveWeight(val);
+      }
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [currentWeight]);
+
+  const handleSaveWeight = async (newWeight: number) => {
+    if (!user) return;
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
+    const existingLog = weightLogs.find(log => log.date === dateStr);
+    const logPayload = { user_id: user.id, date: dateStr, weight: newWeight };
+    
+    let updatedLogs = [];
+    if (existingLog) {
+      updatedLogs = weightLogs.map(l => l.date === dateStr ? { ...l, weight: newWeight } : l);
+    } else {
+      updatedLogs = [...weightLogs, logPayload].sort((a, b) => a.date.localeCompare(b.date));
+    }
+    setWeightLogs(updatedLogs);
+    localStorage.setItem(`fibertrack_weights_${user.id}`, JSON.stringify(updatedLogs));
+
+    try {
+      console.log('Attempting to upsert weight log to Supabase:', logPayload);
+      const { data, error } = await supabase
+        .from('weight_logs')
+        .upsert(logPayload, { onConflict: 'user_id,date' });
+      
+      if (error) {
+        console.error('Supabase upsert error:', error);
+      } else {
+        console.log('Successfully persisted weight log to Supabase:', data);
+      }
+    } catch (err) {
+      console.error('Supabase weight upsert exception:', err);
+    }
+    showToast('Weight updated!', 'success');
+  };
 
   // Fetch Meals from Supabase
   useEffect(() => {
@@ -501,6 +584,40 @@ export default function App() {
     if (!user) return;
     if (meals.length === 0) { showToast('No meals to duplicate today', 'error'); return; }
 
+    // Check for existing meals on target date
+    const startOfTarget = `${targetDateStr}T00:00:00.000Z`;
+    const endOfTarget = `${targetDateStr}T23:59:59.999Z`;
+    
+    const { data: existingMeals, error: checkError } = await supabase
+      .from('meals')
+      .select('id')
+      .eq('user_id', user.id)
+      .gte('created_at', startOfTarget)
+      .lte('created_at', endOfTarget);
+
+    if (checkError) {
+      console.error('Error checking meals:', checkError);
+      showToast('Failed to check existing meals on target date', 'error');
+      return;
+    }
+
+    if (existingMeals && existingMeals.length > 0) {
+      if (!window.confirm('Target day already has meals. Replace existing meals?')) {
+        return;
+      }
+      const existingIds = existingMeals.map(m => m.id);
+      const { error: deleteError } = await supabase
+        .from('meals')
+        .delete()
+        .in('id', existingIds);
+
+      if (deleteError) {
+        console.error('Error clearing existing meals:', deleteError);
+        showToast('Failed to clear existing meals', 'error');
+        return;
+      }
+    }
+
     const mealsToInsert = meals.map(meal => {
       const mealTime = keepOriginalTimes ? meal.time : '12:00';
       return { name: meal.name, time: mealTime, user_id: user.id, created_at: `${targetDateStr}T${mealTime}` };
@@ -662,7 +779,23 @@ export default function App() {
           </div>
 
           {/* Date Selector Strip */}
-          <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} onOpenPicker={() => setIsDatePickerOpen(true)} />
+          {/* Date Selector & Weight Input */}
+          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center mt-4">
+            <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} onOpenPicker={() => setIsDatePickerOpen(true)} />
+            
+            <div className="bg-white border border-border rounded-2xl p-2 flex items-center gap-2 shadow-sm h-[56px]">
+              <span className="text-xs font-bold text-subtle px-2 uppercase tracking-widest shrink-0">Weight</span>
+              <input
+                type="number"
+                step="0.1"
+                value={currentWeight}
+                onChange={(e) => setCurrentWeight(e.target.value)}
+                placeholder="kg"
+                className="w-20 px-2 py-1 bg-gray-50 border border-gray-100 rounded-lg text-center focus:ring-2 focus:ring-accent focus:outline-none font-bold text-ink h-full"
+              />
+              <span className="text-xs font-bold text-ink pr-2">kg</span>
+            </div>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-8 pb-2">
@@ -682,9 +815,16 @@ export default function App() {
             <FileText size={20} />
           </button>
           <button
-            onClick={handleExport}
+            onClick={() => setIsDuplicateDayModalOpen(true)}
+            className="p-2 hover:bg-accent/10 text-subtle hover:text-accent rounded-full transition-all hover:scale-110 active:scale-95"
+            title="Copy Day"
+          >
+            <Copy size={20} />
+          </button>
+          <button
+            onClick={() => setIsExportModalOpen(true)}
             className="p-2 hover:bg-gray-100 rounded-full transition-colors text-subtle"
-            title="Export CSV"
+            title="Export Data"
           >
             <Download size={20} />
           </button>
@@ -741,6 +881,13 @@ export default function App() {
                 <FileText size={18} />
               </button>
               <button 
+                onClick={() => setIsDuplicateDayModalOpen(true)}
+                className="p-2 -mr-1 text-subtle/40 hover:text-accent transition-colors"
+                title="Copy Day"
+              >
+                <Copy size={18} />
+              </button>
+              <button 
                 onClick={() => setView('statistics')}
                 className={cn(
                   "p-2 -mr-1 transition-colors",
@@ -783,8 +930,23 @@ export default function App() {
             <span className="text-accent">GL: {Math.round(dailyTotals.gl)}</span>
           </div>
         </div>
-        <div className="border-b border-border">
+        <div className="border-b border-border flex flex-col gap-2 pb-4 px-5 bg-white">
           <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} onOpenPicker={() => setIsDatePickerOpen(true)} />
+          
+          <div className="flex items-center justify-between bg-gray-50 rounded-2xl p-2 px-4 border border-gray-100 shadow-inner">
+            <span className="text-xs font-bold text-subtle uppercase tracking-widest">Daily Weight</span>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                step="0.1"
+                value={currentWeight}
+                onChange={(e) => setCurrentWeight(e.target.value)}
+                placeholder="0.0"
+                className="w-20 px-2 py-1.5 bg-white border border-gray-200 rounded-xl text-center focus:ring-2 focus:ring-accent focus:outline-none font-bold text-ink text-sm shadow-sm"
+              />
+              <span className="text-xs font-bold text-ink">kg</span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -799,6 +961,7 @@ export default function App() {
             days={statsDays} 
             setDays={setStatsDays}
             isLoading={isStatsLoading}
+            weightLogs={weightLogs}
           />
         ) : view === 'planner' ? (
           <WeeklyPlannerView foods={foods} user={user!} />
@@ -2269,7 +2432,7 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
 
             <div className="space-y-3">
               {items.map((item, i) => {
-                const food = item.is_custom ? { name_hu: item.name, calories: item.calories, protein: item.protein, carbs: item.carbs, fat: item.fat, total_fiber: item.fiber || 0 } : getFoodOrUnknown(foods, item.foodId);
+                const food = item.is_custom ? { name_hu: item.name, calories: item.calories, protein: item.protein, carbs: item.carbs, fat: item.fat, total_fiber: item.fiber || 0 } as any as Food : getFoodOrUnknown(foods, item.foodId);
                 return (
                   <div key={i} className="flex items-center gap-3 bg-gray-50/80 p-3 rounded-xl border border-transparent hover:border-gray-200 hover:shadow-sm hover:bg-white transition-all group">
                     <div>
