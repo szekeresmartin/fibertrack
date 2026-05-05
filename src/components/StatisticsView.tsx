@@ -3,158 +3,32 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   BarChart, Bar, Cell, PieChart, Pie, Legend
 } from 'recharts';
-import { format, subDays, isSameDay, parseISO, startOfDay, startOfWeek, endOfWeek, addDays, differenceInDays } from 'date-fns';
+import { format, isSameDay, startOfWeek, endOfWeek, addDays } from 'date-fns';
 import { Meal, Food } from '../types';
 import { calculateMealTotals, getFoodOrUnknown, cn } from '../lib/utils';
-import { Loader2, TrendingUp, Pizza, Award, Clock } from 'lucide-react';
+import { Loader2, TrendingUp, Pizza, Award, Scale } from 'lucide-react';
+import { useWeightStats } from '../lib/hooks/useWeightStats';
+import { useWeightChartData } from '../lib/hooks/useWeightChartData';
+import { useNutritionStats } from '../lib/hooks/useNutritionStats';
+import { useWeightLogs } from '../lib/queries/weightQueries';
 
 interface StatisticsViewProps {
+  userId: string;
   meals: Meal[];
   foods: Food[];
-  days: 7 | 30;
-  setDays: (days: 7 | 30) => void;
+  days: 7 | 30 | 90;
+  setDays: (days: 7 | 30 | 90) => void;
   isLoading: boolean;
-  weightLogs?: any[];
 }
 
-export default function StatisticsView({ meals, foods, days, setDays, isLoading, weightLogs = [] }: StatisticsViewProps) {
+export default function StatisticsView({ userId, meals, foods, days, setDays, isLoading }: StatisticsViewProps) {
   const [activeTab, setActiveTab] = React.useState<'overview' | 'thisWeek'>('overview');
+  const { data: weightLogs = [] } = useWeightLogs(userId);
   
-  const stats = useMemo(() => {
-    // 1. Daily Trends
-    const endDate = new Date();
-    const dateRange = Array.from({ length: days }).map((_, i) => subDays(endDate, days - 1 - i));
-    
-    const dailyData = dateRange.map(date => {
-      const dayMeals = meals.filter(meal => isSameDay(new Date(meal.created_at || ''), date));
-      
-      const totals = dayMeals.reduce((acc, meal) => {
-        const mealItems = (meal.items || []).map(item => ({
-          food: getFoodOrUnknown(foods, item.foodId),
-          quantity: item.quantityGrams
-        }));
-        const mealTotals = calculateMealTotals(mealItems);
-        return {
-          total_fiber: acc.total_fiber + mealTotals.total_fiber,
-          gl: acc.gl + mealTotals.gl
-        };
-      }, { total_fiber: 0, gl: 0 });
+  const { weeklyTrend, trendDirection } = useWeightStats(weightLogs, meals, foods);
+  const weightChartData = useWeightChartData(weightLogs, days);
+  const stats = useNutritionStats(meals, foods, days);
 
-      return {
-        date: format(date, 'MMM dd'),
-        fiber: Number(totals.total_fiber.toFixed(1)),
-        gl: Number(totals.gl.toFixed(1))
-      };
-    });
-
-    // 2. Meal Distribution
-    const mealDistMap: Record<string, number> = {};
-    meals.forEach(meal => {
-      const name = meal.name.trim() || 'Other';
-      const normalizedName = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
-      
-      const mealItems = (meal.items || []).map(item => ({
-        food: getFoodOrUnknown(foods, item.foodId),
-        quantity: item.quantityGrams
-      }));
-      const mealTotals = calculateMealTotals(mealItems);
-      
-      mealDistMap[normalizedName] = (mealDistMap[normalizedName] || 0) + mealTotals.total_fiber;
-    });
-
-    const mealDistData = Object.entries(mealDistMap)
-      .map(([name, fiber]) => ({ name, fiber: Number(fiber.toFixed(1)) }))
-      .sort((a, b) => b.fiber - a.fiber);
-
-    // 3. Top Foods
-    const foodFiberMap: Record<string, number> = {};
-    meals.forEach(meal => {
-      (meal.items || []).forEach(item => {
-        const food = getFoodOrUnknown(foods, item.foodId);
-        const fiberContribution = (food.total_fiber * item.quantityGrams) / 100;
-        const foodName = food.name_hu || 'Unknown';
-        foodFiberMap[foodName] = (foodFiberMap[foodName] || 0) + fiberContribution;
-      });
-    });
-
-    const topFoodsData = Object.entries(foodFiberMap)
-      .map(([name, fiber]) => ({ name, fiber: Number(fiber.toFixed(1)) }))
-      .sort((a, b) => b.fiber - a.fiber)
-      .slice(0, 5);
-
-    // 4. Averages
-    const avgFiber = dailyData.reduce((sum, d) => sum + d.fiber, 0) / days;
-    const avgGL = dailyData.reduce((sum, d) => sum + d.gl, 0) / days;
-
-
-
-    return { dailyData, mealDistData, topFoodsData, avgFiber, avgGL };
-  }, [meals, foods, days]);
-
-  const maintenanceStats = useMemo(() => {
-    if (!weightLogs || weightLogs.length < 3) {
-      return { tdee: null, trend: 'stable' };
-    }
-
-    const sortedLogs = [...weightLogs].sort((a, b) => a.date.localeCompare(b.date));
-    const dayCalorieMap: Record<string, number> = {};
-    
-    meals.forEach(meal => {
-      const dateStr = format(new Date(meal.created_at || ''), 'yyyy-MM-dd');
-      const mealItems = (meal.items || []).map(item => ({
-        food: getFoodOrUnknown(foods, item.foodId),
-        quantity: item.quantityGrams
-      }));
-      const mealTotals = calculateMealTotals(mealItems);
-      dayCalorieMap[dateStr] = (dayCalorieMap[dateStr] || 0) + mealTotals.calories;
-    });
-
-    const now = new Date();
-    const cutoff = subDays(now, 30);
-    const activeWeights = sortedLogs.filter(log => new Date(log.date) >= cutoff);
-
-    if (activeWeights.length < 3) {
-      return { tdee: null, trend: 'stable' };
-    }
-
-    const firstDate = new Date(activeWeights[0].date);
-    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-    const n = activeWeights.length;
-
-    activeWeights.forEach(log => {
-      const x = differenceInDays(new Date(log.date), firstDate);
-      const y = log.weight;
-      sumX += x;
-      sumY += y;
-      sumXY += x * y;
-      sumX2 += x * x;
-    });
-
-    const denominator = (n * sumX2 - sumX * sumX);
-    const slope = denominator === 0 ? 0 : (n * sumXY - sumX * sumY) / denominator; 
-
-    const lastDate = new Date(activeWeights[activeWeights.length - 1].date);
-    const totalDays = Math.max(1, differenceInDays(lastDate, firstDate));
-
-    let totalCals = 0;
-    let calDays = 0;
-    const dateIter = new Date(firstDate);
-    while (dateIter <= lastDate) {
-      const dStr = format(dateIter, 'yyyy-MM-dd');
-      totalCals += dayCalorieMap[dStr] || 0;
-      calDays++;
-      dateIter.setDate(dateIter.getDate() + 1);
-    }
-
-    const avgDailyCalories = totalCals / (calDays || 1);
-    const dailySurplus = slope * 7700;
-    const tdee = avgDailyCalories - dailySurplus;
-    
-    return {
-      tdee: tdee > 0 ? Math.round(tdee) : null,
-      trend: slope > 0.05 ? 'up' : slope < -0.05 ? 'down' : 'stable',
-    };
-  }, [weightLogs, meals, foods]);
   const thisWeekStats = useMemo(() => {
     const now = new Date();
     const start = startOfWeek(now, { weekStartsOn: 1 });
@@ -295,6 +169,12 @@ export default function StatisticsView({ meals, foods, days, setDays, isLoading,
           >
             30 Days
           </button>
+          <button 
+            onClick={() => setDays(90)}
+            className={cn("px-4 py-2 rounded-xl border text-sm font-bold transition-all", days === 90 ? "bg-ink text-white border-ink" : "bg-white text-subtle border-border")}
+          >
+            90 Days
+          </button>
         </div>
       </div>
     );
@@ -350,6 +230,15 @@ export default function StatisticsView({ meals, foods, days, setDays, isLoading,
               >
                 30 Days
               </button>
+              <button 
+                onClick={() => setDays(90)}
+                className={cn(
+                  "px-6 py-2 rounded-xl text-sm font-bold transition-all",
+                  days === 90 ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink"
+                )}
+              >
+                90 Days
+              </button>
             </div>
           )}
         </div>
@@ -381,59 +270,19 @@ export default function StatisticsView({ meals, foods, days, setDays, isLoading,
           color="bg-blue-50 text-blue-600"
         />
         <StatSummaryCard 
-          label="Total Meals" 
-          value={meals.length.toString()} 
-          unit="" 
-          icon={<Clock size={20} />}
-          color="bg-purple-50 text-purple-600"
-        />
-        <StatSummaryCard 
-          label="Maintenance Kcal" 
-          value={maintenanceStats.tdee ? maintenanceStats.tdee.toString() : 'N/A'} 
-          unit={maintenanceStats.tdee ? "kcal/day" : ""} 
-          icon={<TrendingUp size={20} />}
-          color="bg-red-50 text-red-600"
+          label="Weight Trend" 
+          value={weeklyTrend === 0 ? '--' : Math.abs(weeklyTrend).toFixed(2)} 
+          unit={weeklyTrend === 0 ? '' : `kg/wk ${trendDirection === 'up' ? '↑' : trendDirection === 'down' ? '↓' : '→'}`} 
+          icon={<Scale size={20} />}
+          color={cn(
+            "bg-gray-50 text-gray-600",
+            trendDirection === 'down' && "bg-green-50 text-green-600",
+            trendDirection === 'up' && "bg-red-50 text-red-600"
+          )}
         />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Weight Trend */}
-        <ChartContainer title="Weight Trend" subtitle="Body weight over time (kg)">
-          {weightLogs && weightLogs.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={[...weightLogs].sort((a, b) => a.date.localeCompare(b.date))}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
-                <XAxis 
-                  dataKey="date" 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{fontSize: 12, fill: '#94a3b8'}}
-                  dy={10}
-                />
-                <YAxis 
-                  axisLine={false} 
-                  tickLine={false} 
-                  domain={['dataMin - 1', 'dataMax + 1']}
-                  tick={{fontSize: 12, fill: '#94a3b8'}}
-                />
-                <Tooltip 
-                  contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                  cursor={{ stroke: '#8b5cf6', strokeWidth: 2 }}
-                />
-                <Line 
-                  type="monotone" 
-                  dataKey="weight" 
-                  stroke="#8b5cf6" 
-                  strokeWidth={4} 
-                  dot={{ r: 4, fill: '#8b5cf6', strokeWidth: 2, stroke: '#fff' }}
-                  activeDot={{ r: 6, strokeWidth: 0 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : (
-            <p className="text-subtle text-sm italic flex items-center justify-center h-60">Log weight in timeline to view trend.</p>
-          )}
-        </ChartContainer>
         {/* Daily Fiber Trend */}
         <ChartContainer title="Daily Fiber Trend" subtitle="Daily total fiber intake (grams)">
           <ResponsiveContainer width="100%" height={300}>
@@ -500,61 +349,61 @@ export default function StatisticsView({ meals, foods, days, setDays, isLoading,
           </ResponsiveContainer>
         </ChartContainer>
 
-        {/* Meal Distribution */}
-        <ChartContainer title="Meal Distribution" subtitle="Fiber contribution by meal type">
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={stats.mealDistData} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f0f0f0" />
-              <XAxis type="number" hide />
-              <YAxis 
-                dataKey="name" 
-                type="category" 
-                axisLine={false} 
-                tickLine={false} 
-                tick={{fontSize: 12, fontWeight: 700, fill: '#1e293b'}}
-                width={100}
-              />
-              <Tooltip 
-                cursor={{fill: 'transparent'}}
-                contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-              />
-              <Bar dataKey="fiber" radius={[0, 8, 8, 0]}>
-                {stats.mealDistData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={['#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899'][index % 5]} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+        {/* Weight Progress */}
+        <ChartContainer title="Weight Progress" subtitle="Body weight and 7-day moving average">
+          {weightChartData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={weightChartData}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+                <XAxis 
+                  dataKey="date" 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{fontSize: 12, fill: '#94a3b8'}}
+                  tickFormatter={(val) => format(new Date(val), 'MMM d')}
+                  dy={10}
+                />
+                <YAxis 
+                  axisLine={false} 
+                  tickLine={false} 
+                  domain={['dataMin - 1', 'dataMax + 1']}
+                  tick={{fontSize: 12, fill: '#94a3b8'}}
+                  tickFormatter={(val) => val.toFixed(1)}
+                />
+                <Tooltip 
+                  contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                  cursor={{ stroke: '#8b5cf6', strokeWidth: 2 }}
+                  labelFormatter={(val) => format(new Date(val), 'MMMM d, yyyy')}
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="weight" 
+                  stroke="#8b5cf6" 
+                  strokeWidth={2} 
+                  strokeOpacity={0.3}
+                  dot={{ r: 3, fill: '#8b5cf6', strokeWidth: 1, stroke: '#fff', fillOpacity: 0.5 }}
+                  activeDot={{ r: 4, strokeWidth: 0 }}
+                  name="Weight"
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="movingAverage" 
+                  stroke="#8b5cf6" 
+                  strokeWidth={4} 
+                  dot={false}
+                  activeDot={{ r: 6, strokeWidth: 0 }}
+                  name="7-Day Avg"
+                  connectNulls
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-[300px] bg-gray-50 rounded-3xl border border-dashed border-border">
+              <p className="text-subtle text-sm italic">Not enough weight logs for this period.</p>
+            </div>
+          )}
         </ChartContainer>
-
-        {/* Top Foods */}
-        <ChartContainer title="Top 5 Fiber Sources" subtitle="Foods providing the most fiber">
-          <div className="space-y-4">
-            {stats.topFoodsData.map((food, index) => (
-              <div key={food.name} className="flex items-center gap-4">
-                <div className={cn(
-                  "w-8 h-8 rounded-full flex items-center justify-center text-xs font-black shrink-0",
-                  index === 0 ? "bg-yellow-100 text-yellow-700" : "bg-gray-100 text-gray-400"
-                )}>
-                  {index + 1}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex justify-between items-baseline mb-1">
-                    <span className="font-bold text-sm truncate">{food.name}</span>
-                    <span className="font-mono text-xs text-subtle">{food.fiber}g</span>
-                  </div>
-                  <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-accent rounded-full" 
-                      style={{ width: `${(food.fiber / stats.topFoodsData[0].fiber) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </ChartContainer>
-        </div>
+      </div>
         </>
       ) : (
         <div className="space-y-8 animate-in fade-in duration-500">

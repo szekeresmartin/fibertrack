@@ -3,13 +3,13 @@ import { supabase } from '../lib/supabase';
 
 // ─── Env ──────────────────────────────────────────────────────────────────────
 
-const EDAMAM_APP_ID: string = (import.meta as any).env?.VITE_EDAMAM_APP_ID ?? '';
-const EDAMAM_APP_KEY: string = (import.meta as any).env?.VITE_EDAMAM_APP_KEY ?? '';
+// ─── Env ──────────────────────────────────────────────────────────────────────
+
 const OPENAI_KEY: string = (import.meta as any).env?.VITE_OPENAI_API_KEY ?? '';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type FieldSource = 'edamam' | 'ai' | 'manual';
+type FieldSource = 'ai' | 'manual';
 
 interface NutrientSources {
   calories?: FieldSource;
@@ -53,7 +53,7 @@ interface NutritionResult {
   magnesium: number | null;
   // Meta
   sources: NutrientSources;
-  source: 'cache' | 'edamam' | 'manual';
+  source: 'cache' | 'manual';
   usedOpenAI: boolean;
   category: 'vegetable' | 'other';
 }
@@ -114,98 +114,7 @@ async function lookupCache(query: string): Promise<NutritionResult | null> {
   };
 }
 
-// ─── 2. Edamam lookup ─────────────────────────────────────────────────────────
-
-function parseInput(input: string): { foodName: string; grams: number } {
-  const match = input.match(/(\d+(?:\.\d+)?)\s*g\b/i);
-  if (match) {
-    const grams = parseFloat(match[1]);
-    const foodName = input.replace(match[0], '').trim() || input.trim();
-    return { foodName, grams };
-  }
-  return { foodName: input.trim(), grams: 100 };
-}
-
-// Edamam nutrient key → result field mapping
-const EDAMAM_MAP: Array<[string, keyof NutrientSources]> = [
-  ['ENERC_KCAL', 'calories'],
-  ['PROCNT',     'protein'],
-  ['FAT',        'fat'],
-  ['CHOCDF',     'carbs'],
-  ['FIBTG',      'total_fiber'],
-  ['SUGAR',      'sugar'],
-  ['NA',         'sodium'],
-  ['CHOLE',      'cholesterol'],
-  ['CA',         'calcium'],
-  ['FE',         'iron'],
-  ['K',          'potassium'],
-  ['MG',         'magnesium'],
-];
-
-async function lookupEdamam(query: string): Promise<NutritionResult> {
-  if (!EDAMAM_APP_ID || !EDAMAM_APP_KEY) {
-    throw new Error('VITE_EDAMAM_APP_ID or VITE_EDAMAM_APP_KEY is not set.');
-  }
-
-  const { foodName, grams } = parseInput(query.trim());
-  const factor = grams / 100;
-
-  const url = new URL('https://api.edamam.com/api/food-database/v2/parser');
-  url.searchParams.set('app_id', EDAMAM_APP_ID);
-  url.searchParams.set('app_key', EDAMAM_APP_KEY);
-  url.searchParams.set('ingr', foodName);
-
-  const res = await fetch(url.toString());
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Edamam error ${res.status}: ${body.slice(0, 120)}`);
-  }
-
-  const data = await res.json();
-  const food = data.parsed?.[0]?.food ?? data.hints?.[0]?.food;
-  if (!food) throw new Error('No food found. Try a simpler or English description.');
-
-  const n: Record<string, number> = food.nutrients ?? {};
-  console.log("NUTRIENTS:", n);
-
-  const sources: NutrientSources = {};
-
-  // Extract all available nutrients, scale by factor, track source
-  const nutrientValues: Partial<Record<keyof NutrientSources, number | null>> = {};
-  for (const [edamamKey, field] of EDAMAM_MAP) {
-    const raw = n[edamamKey];
-    const val = r1(raw != null ? raw * factor : null);
-    nutrientValues[field] = val;
-    if (val !== null) sources[field] = 'edamam';
-  }
-
-  return {
-    nameHu: query.trim(),
-    nameEn: food.label ?? query.trim(),
-    brand: null,
-    calories:        nutrientValues.calories        ?? null,
-    protein:         nutrientValues.protein         ?? null,
-    fat:             nutrientValues.fat             ?? null,
-    carbs:           nutrientValues.carbs           ?? null,
-    total_fiber:     nutrientValues.total_fiber     ?? null,
-    soluble_fiber:   null, // not in Edamam parser — filled by OpenAI if available
-    insoluble_fiber: null, // not in Edamam parser — filled by OpenAI if available
-    gi:              null,
-    sugar:           nutrientValues.sugar           ?? null,
-    sodium:          nutrientValues.sodium          ?? null,
-    cholesterol:     nutrientValues.cholesterol     ?? null,
-    calcium:         nutrientValues.calcium         ?? null,
-    iron:            nutrientValues.iron            ?? null,
-    potassium:       nutrientValues.potassium       ?? null,
-    magnesium:       nutrientValues.magnesium       ?? null,
-    sources,
-    source: 'edamam',
-    usedOpenAI: false,
-    category: 'other',
-  };
-}
-
-// ─── 3. OpenAI fallback (only for missing fields) ─────────────────────────────
+// ─── 2. OpenAI fallback (only for missing fields) ─────────────────────────────
 
 async function fillWithOpenAI(result: NutritionResult): Promise<NutritionResult> {
   // Only call if soluble or insoluble fiber is missing
@@ -254,7 +163,7 @@ async function fillWithOpenAI(result: NutritionResult): Promise<NutritionResult>
 
     return { ...result, soluble_fiber: soluble, insoluble_fiber: insoluble, sources, usedOpenAI: true };
   } catch {
-    return result; // fail silently — Edamam data is still valid
+    return result; 
   }
 }
 
@@ -344,19 +253,9 @@ export default function AdminFoodGenerator() {
         setEditNameHu(cached.nameHu);
         setEditNameEn(cached.nameEn);
         setEditBrand(cached.brand ?? '');
-        return;
+      } else {
+        setError('Food not found in local database.');
       }
-
-      // Step 2: Edamam lookup
-      let edamamResult = await lookupEdamam(q);
-
-      // Step 3: OpenAI fills any missing fields (soluble/insoluble fiber)
-      edamamResult = await fillWithOpenAI(edamamResult);
-
-      setResult(edamamResult);
-      setEditNameHu(edamamResult.nameHu);
-      setEditNameEn(edamamResult.nameEn);
-      setEditBrand(edamamResult.brand ?? '');
     } catch (err: any) {
       setError(err?.message ?? 'Something went wrong.');
     } finally {
@@ -441,7 +340,7 @@ export default function AdminFoodGenerator() {
       <div style={s.header}>
         <span style={s.badge}>ADMIN</span>
         <h1 style={s.title}>Food Generator</h1>
-        <p style={s.subtitle}>Local DB cache → Edamam → OpenAI (fiber)</p>
+        <p style={s.subtitle}>Local DB cache → OpenAI (fiber)</p>
       </div>
 
       {/* Mode Toggle */}
@@ -453,7 +352,7 @@ export default function AdminFoodGenerator() {
           }}
           onClick={() => handleModeChange('auto')}
         >
-          Auto (Edamam)
+          Auto (Search)
         </button>
         <button
           style={{
@@ -472,7 +371,7 @@ export default function AdminFoodGenerator() {
           <input
             style={s.input}
             type="text"
-            placeholder="e.g. chicken breast 200g"
+            placeholder="Search for existing food..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !loading && handleGenerate()}
@@ -489,7 +388,7 @@ export default function AdminFoodGenerator() {
             onClick={handleGenerate}
             disabled={loading || !query.trim()}
           >
-            {loading ? 'Looking up…' : 'Generate'}
+            {loading ? 'Searching…' : 'Search'}
           </button>
         </div>
       )}
@@ -504,9 +403,6 @@ export default function AdminFoodGenerator() {
           <div style={s.resultMeta}>
             {result.source === 'cache' && (
               <span style={s.badgeCache}>✓ From database</span>
-            )}
-            {result.source === 'edamam' && (
-              <span style={s.badgeEdamam}>⚡ Edamam API</span>
             )}
             {result.source === 'manual' && (
               <span style={s.badgeManual}>✍️ Manual Entry</span>
@@ -613,7 +509,7 @@ export default function AdminFoodGenerator() {
           </div>
 
           {/* Edit Names */}
-          {(result.source === 'edamam' || result.source === 'manual') && (
+          {(result.source === 'cache' || result.source === 'manual') && (
             <div style={s.editNamesWrapper}>
               <div style={s.editField}>
                 <label style={s.editLabel}>Hungarian name (required)</label>
@@ -646,7 +542,7 @@ export default function AdminFoodGenerator() {
 
           {/* Actions */}
           <div style={s.actionRow}>
-            {(result.source === 'edamam' || result.source === 'manual') && (
+            {(result.source === 'cache' || result.source === 'manual') && (
               <button
                 style={{
                   ...s.btn,
@@ -666,7 +562,7 @@ export default function AdminFoodGenerator() {
                 onClick={handleGenerate}
                 disabled={loading}
               >
-                Regenerate
+                Refresh
               </button>
             )}
           </div>
@@ -830,16 +726,6 @@ const s: Record<string, React.CSSProperties> = {
     display: 'inline-block',
     background: '#dcfce7',
     color: '#166534',
-    fontSize: 11,
-    fontWeight: 700,
-    padding: '3px 8px',
-    borderRadius: 4,
-    whiteSpace: 'nowrap',
-  },
-  badgeEdamam: {
-    display: 'inline-block',
-    background: '#dbeafe',
-    color: '#1d4ed8',
     fontSize: 11,
     fontWeight: 700,
     padding: '3px 8px',

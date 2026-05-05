@@ -27,13 +27,15 @@ import {
   Calendar,
   Copy,
   BarChart2,
-  ShoppingCart
+  ShoppingCart,
+  Scale
 } from 'lucide-react';
 import { Food, Meal, DailyTotals, MealItem } from './types';
 import { fetchFoodsFromSheets } from './lib/googleSheets';
 import { cn, calculateMealTotals, getFriendlyErrorMessage, getGlycemicLoadLabel, getFoodOrUnknown } from './lib/utils';
 import StatisticsView from './components/StatisticsView';
 import WeeklyPlannerView from './components/WeeklyPlannerView';
+import WeightView from './components/WeightView';
 import { downloadDayAsCSV, generateDaySummaryText } from './lib/exportUtils';
 import { format, addDays, isSameDay, isToday, startOfToday, subDays, parseISO, differenceInDays } from 'date-fns';
 import { computeStats, ProcessedStats } from './lib/statsUtils';
@@ -118,9 +120,9 @@ export default function App() {
   const [sheetUrl, setSheetUrl] = useState<string>(() => {
     return localStorage.getItem('fiber_track_sheet_url') || '';
   });
-  const [view, setView] = useState<'timeline' | 'database' | 'statistics' | 'planner'>('timeline');
+  const [view, setView] = useState<'timeline' | 'database' | 'statistics' | 'planner' | 'weight'>('timeline');
   const [statsMeals, setStatsMeals] = useState<Meal[]>([]);
-  const [statsDays, setStatsDays] = useState<7 | 30>(7);
+  const [statsDays, setStatsDays] = useState<7 | 30 | 90>(7);
   const [isStatsLoading, setIsStatsLoading] = useState(false);
   const [isMealModalOpen, setIsMealModalOpen] = useState(false);
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
@@ -138,8 +140,6 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
   const [quickAddInput, setQuickAddInput] = useState('');
   const nowIndicatorRef = useRef<HTMLDivElement>(null);
-  const [weightLogs, setWeightLogs] = useState<{ id?: string, user_id: string, date: string, weight: number }[]>([]);
-  const [currentWeight, setCurrentWeight] = useState<string>('');
 
   const showToast = (text: string, type: 'success' | 'error') => {
     setToastMessage({ text, type });
@@ -171,87 +171,6 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, []);
-
-  useEffect(() => {
-    if (!user) return;
-    const fetchWeightLogs = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('weight_logs')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('date', { ascending: true });
-        if (error) {
-          console.error('Supabase fetch weight logs error:', error);
-          if (error.code === '42P01') {
-            const localData = localStorage.getItem(`fibertrack_weights_${user.id}`);
-            if (localData) setWeightLogs(JSON.parse(localData));
-          }
-        } else if (data) {
-          console.log('Successfully loaded weight logs from Supabase:', data);
-          setWeightLogs(data);
-        }
-      } catch (err) {
-        console.error('Supabase weight fetch exception:', err);
-        const localData = localStorage.getItem(`fibertrack_weights_${user.id}`);
-        if (localData) setWeightLogs(JSON.parse(localData));
-      }
-    };
-    fetchWeightLogs();
-  }, [user]);
-
-  useEffect(() => {
-    const dateStr = format(selectedDate, 'yyyy-MM-dd');
-    const log = weightLogs.find(l => l.date === dateStr);
-    setCurrentWeight(log ? log.weight.toString() : '');
-  }, [selectedDate, weightLogs]);
-
-  useEffect(() => {
-    if (!currentWeight) return;
-    const dateStr = format(selectedDate, 'yyyy-MM-dd');
-    const log = weightLogs.find(l => l.date === dateStr);
-    if (log && log.weight.toString() === currentWeight) return;
-
-    const timer = setTimeout(() => {
-      const val = parseFloat(currentWeight);
-      if (!isNaN(val) && val > 0) {
-        handleSaveWeight(val);
-      }
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [currentWeight]);
-
-  const handleSaveWeight = async (newWeight: number) => {
-    if (!user) return;
-    const dateStr = format(selectedDate, 'yyyy-MM-dd');
-    const existingLog = weightLogs.find(log => log.date === dateStr);
-    const logPayload = { user_id: user.id, date: dateStr, weight: newWeight };
-    
-    let updatedLogs = [];
-    if (existingLog) {
-      updatedLogs = weightLogs.map(l => l.date === dateStr ? { ...l, weight: newWeight } : l);
-    } else {
-      updatedLogs = [...weightLogs, logPayload].sort((a, b) => a.date.localeCompare(b.date));
-    }
-    setWeightLogs(updatedLogs);
-    localStorage.setItem(`fibertrack_weights_${user.id}`, JSON.stringify(updatedLogs));
-
-    try {
-      console.log('Attempting to upsert weight log to Supabase:', logPayload);
-      const { data, error } = await supabase
-        .from('weight_logs')
-        .upsert(logPayload, { onConflict: 'user_id,date' });
-      
-      if (error) {
-        console.error('Supabase upsert error:', error);
-      } else {
-        console.log('Successfully persisted weight log to Supabase:', data);
-      }
-    } catch (err) {
-      console.error('Supabase weight upsert exception:', err);
-    }
-    showToast('Weight updated!', 'success');
-  };
 
   // Fetch Meals from Supabase
   useEffect(() => {
@@ -312,7 +231,7 @@ export default function App() {
 
   // Fetch Stats data (7 or 30 days)
   useEffect(() => {
-    if (!user || view !== 'statistics') return;
+    if (!user || (view !== 'statistics' && view !== 'weight')) return;
 
     const fetchStatsData = async () => {
       setIsStatsLoading(true);
@@ -767,8 +686,54 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-bg text-ink font-sans flex flex-col">
-      {/* Desktop Header — hidden on mobile (mobile uses compact sticky header below) */}
-      <header className="hidden lg:flex sticky top-0 z-10 bg-card border-b border-border px-6 py-6 sm:px-16 flex-col sm:flex-row justify-between items-start sm:items-end gap-6">
+      {/* App Top Navigation (Desktop) */}
+      <nav className="hidden lg:flex w-full bg-white border-b border-border px-6 py-4 items-center justify-between sticky top-0 z-50">
+        {/* LEFT */}
+        <div className="flex items-center gap-3">
+          <button onClick={() => { setEditingMeal(null); setIsMealModalOpen(true); }} className="flex items-center gap-2 bg-ink text-white px-5 py-2.5 rounded-xl font-bold text-sm hover:bg-black transition-transform active:scale-95 shadow-sm">
+            <Plus size={18} />
+            Add Meal
+          </button>
+          <button onClick={() => setIsDuplicateDayModalOpen(true)} className="flex items-center gap-2 bg-gray-50 text-ink px-4 py-2.5 rounded-xl font-bold text-sm hover:bg-gray-100 transition-colors border border-border">
+            <Copy size={18} />
+            Copy Day
+          </button>
+        </div>
+
+        {/* CENTER */}
+        <div className="flex items-center gap-1 bg-gray-50 p-1.5 rounded-2xl border border-border">
+          <button onClick={() => setView('timeline')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'timeline' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
+            <Clock size={16} />
+            Dashboard
+          </button>
+          <button onClick={() => setView('statistics')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'statistics' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
+            <BarChart2 size={16} />
+            Statistics
+          </button>
+          <button onClick={() => setView('planner')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'planner' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
+            <ShoppingCart size={16} />
+            Meal Planner
+          </button>
+          <button onClick={() => setView('weight')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'weight' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
+            <Scale size={16} />
+            Weight
+          </button>
+        </div>
+
+        {/* RIGHT */}
+        <div className="flex items-center gap-2">
+          <button onClick={() => setIsExportModalOpen(true)} className="flex items-center gap-2 text-subtle hover:text-ink p-2.5 rounded-xl hover:bg-gray-50 transition-colors border border-transparent hover:border-border" title="Export Data">
+            <Download size={18} />
+          </button>
+          <button onClick={handleLogout} className="flex items-center gap-2 text-subtle hover:text-red-500 p-2.5 rounded-xl hover:bg-red-50 transition-colors border border-transparent hover:border-red-100" title="Logout">
+            <LogOut size={18} />
+          </button>
+        </div>
+      </nav>
+
+      {/* Desktop Header for Timeline (Dashboard) */}
+      {view === 'timeline' && (
+      <header className="hidden lg:flex bg-card border-b border-border px-6 py-6 sm:px-16 flex-col sm:flex-row justify-between items-start sm:items-end gap-6">
         <div className="title-group w-full sm:w-auto">
           <h1 className="text-[14px] uppercase tracking-[0.1em] text-subtle font-bold mb-2">
             Fiber Intake {selectedDate.toDateString() === new Date().toDateString() ? 'Today' : ''}
@@ -779,22 +744,8 @@ export default function App() {
           </div>
 
           {/* Date Selector Strip */}
-          {/* Date Selector & Weight Input */}
           <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center mt-4">
             <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} onOpenPicker={() => setIsDatePickerOpen(true)} />
-            
-            <div className="bg-white border border-border rounded-2xl p-2 flex items-center gap-2 shadow-sm h-[56px]">
-              <span className="text-xs font-bold text-subtle px-2 uppercase tracking-widest shrink-0">Weight</span>
-              <input
-                type="number"
-                step="0.1"
-                value={currentWeight}
-                onChange={(e) => setCurrentWeight(e.target.value)}
-                placeholder="kg"
-                className="w-20 px-2 py-1 bg-gray-50 border border-gray-100 rounded-lg text-center focus:ring-2 focus:ring-accent focus:outline-none font-bold text-ink h-full"
-              />
-              <span className="text-xs font-bold text-ink pr-2">kg</span>
-            </div>
           </div>
         </div>
 
@@ -805,68 +756,8 @@ export default function App() {
           <StatCard label="Fat" value={Math.round(dailyTotals.fat)} unit="g" />
           <StatCard label="GL" value={Math.round(dailyTotals.gl)} unit="" highlight />
         </div>
-
-        <div className="absolute top-4 right-6 flex items-center gap-2">
-          <button
-            onClick={handleCopySummary}
-            className="p-2 hover:bg-gray-100 rounded-full transition-colors text-subtle"
-            title="Copy Summary"
-          >
-            <FileText size={20} />
-          </button>
-          <button
-            onClick={() => setIsDuplicateDayModalOpen(true)}
-            className="p-2 hover:bg-accent/10 text-subtle hover:text-accent rounded-full transition-all hover:scale-110 active:scale-95"
-            title="Copy Day"
-          >
-            <Copy size={20} />
-          </button>
-          <button
-            onClick={() => setIsExportModalOpen(true)}
-            className="p-2 hover:bg-gray-100 rounded-full transition-colors text-subtle"
-            title="Export Data"
-          >
-            <Download size={20} />
-          </button>
-          <button
-            onClick={() => setView('statistics')}
-            className={cn(
-              "p-2 rounded-full transition-colors",
-              view === 'statistics' ? "bg-accent text-white" : "hover:bg-gray-100 text-subtle"
-            )}
-            title="Statistics"
-          >
-            <BarChart2 size={20} />
-          </button>
-          <button
-            onClick={() => setView('planner')}
-            className={cn(
-              "p-2 rounded-full transition-colors",
-              view === 'planner' ? "bg-accent text-white" : "hover:bg-gray-100 text-subtle"
-            )}
-            title="Weekly Planner"
-          >
-            <ShoppingCart size={20} />
-          </button>
-          <button
-            onClick={() => setView(view === 'timeline' ? 'database' : 'timeline')}
-            className={cn(
-              "p-2 rounded-full transition-colors",
-              view === 'database' ? "bg-accent text-white" : "hover:bg-gray-100 text-subtle"
-            )}
-            title={view === 'timeline' ? "Database" : "Timeline"}
-          >
-            {view === 'timeline' ? <Database size={20} /> : <Clock size={20} />}
-          </button>
-          <button
-            onClick={handleLogout}
-            className="p-2 hover:bg-red-50 text-subtle hover:text-red-500 rounded-full transition-colors"
-            title="Logout"
-          >
-            <LogOut size={20} />
-          </button>
-        </div>
       </header>
+      )}
       {/* Mobile header: compact date nav + fiber progress bar */}
       <div className="lg:hidden sticky top-0 z-10 bg-card border-b border-border">
         {/* Fiber progress row */}
@@ -932,21 +823,6 @@ export default function App() {
         </div>
         <div className="border-b border-border flex flex-col gap-2 pb-4 px-5 bg-white">
           <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} onOpenPicker={() => setIsDatePickerOpen(true)} />
-          
-          <div className="flex items-center justify-between bg-gray-50 rounded-2xl p-2 px-4 border border-gray-100 shadow-inner">
-            <span className="text-xs font-bold text-subtle uppercase tracking-widest">Daily Weight</span>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                step="0.1"
-                value={currentWeight}
-                onChange={(e) => setCurrentWeight(e.target.value)}
-                placeholder="0.0"
-                className="w-20 px-2 py-1.5 bg-white border border-gray-200 rounded-xl text-center focus:ring-2 focus:ring-accent focus:outline-none font-bold text-ink text-sm shadow-sm"
-              />
-              <span className="text-xs font-bold text-ink">kg</span>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -956,12 +832,19 @@ export default function App() {
       )}>
         {view === 'statistics' ? (
           <StatisticsView 
+            userId={user.id}
             meals={statsMeals} 
             foods={foods} 
             days={statsDays} 
             setDays={setStatsDays}
             isLoading={isStatsLoading}
-            weightLogs={weightLogs}
+          />
+        ) : view === 'weight' ? (
+          <WeightView 
+            userId={user.id}
+            selectedDate={selectedDate}
+            meals={statsMeals}
+            foods={foods}
           />
         ) : view === 'planner' ? (
           <WeeklyPlannerView foods={foods} user={user!} />
@@ -1316,7 +1199,7 @@ export default function App() {
                   )}
                 </div>
               )}
-
+              
               <button
                 onClick={() => {
                   setEditingMeal(null);
@@ -2130,11 +2013,13 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
   const [isManualMode, setIsManualMode] = useState(false);
   const [manualForm, setManualForm] = useState({
     name: '',
+    grams: '100',
     calories: '',
     protein: '',
     carbs: '',
     fat: '',
-    fiber: ''
+    fiber: '',
+    isTotal: true
   });
   const quantityRefs = useRef<(HTMLInputElement | null)[]>([]);
 
@@ -2263,25 +2148,37 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
   };
 
   const handleAddManual = () => {
-    if (!manualForm.name || !manualForm.calories || !manualForm.protein || !manualForm.carbs || !manualForm.fat) {
-      setErrorMsg("Please fill in all macro fields for manual entry.");
+    const { name, grams, calories, protein, carbs, fat, fiber, isTotal } = manualForm;
+    if (!name || !calories || !protein || !carbs || !fat || !grams) {
+      setErrorMsg("Please fill in name, grams, and all core macro fields.");
       return;
     }
     
+    const qty = Number(grams);
+    if (isNaN(qty) || qty <= 0) {
+      setErrorMsg("Grams must be a valid number greater than 0.");
+      return;
+    }
+
+    // Scaling factor: if entering total values, we convert them to per-100g
+    // If entering per-100g, we keep them as is.
+    // calculateMealTotals expects per-100g macros and multiplies by (quantity / 100).
+    const scale = isTotal ? (100 / qty) : 1;
+    
     const newItem = {
       foodId: null,
-      quantityGrams: 100, // Manual items are usually absolute, we set 100 as base
-      name: manualForm.name,
-      calories: Number(manualForm.calories),
-      protein: Number(manualForm.protein),
-      carbs: Number(manualForm.carbs),
-      fat: Number(manualForm.fat),
-      fiber: Number(manualForm.fiber || 0),
+      quantityGrams: qty,
+      name: name,
+      calories: Number(calories) * scale,
+      protein: Number(protein) * scale,
+      carbs: Number(carbs) * scale,
+      fat: Number(fat) * scale,
+      fiber: Number(fiber || 0) * scale,
       is_custom: true
     };
     
     setItems(prev => [...prev, newItem]);
-    setManualForm({ name: '', calories: '', protein: '', carbs: '', fat: '', fiber: '' });
+    setManualForm({ name: '', grams: '100', calories: '', protein: '', carbs: '', fat: '', fiber: '', isTotal: true });
     setIsManualMode(false);
     setErrorMsg(null);
   };
@@ -2343,24 +2240,38 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Add Foods</label>
-                <div className="flex bg-gray-100 p-0.5 rounded-lg">
-                  <button type="button" onClick={() => setIsManualMode(false)} className={cn("px-3 py-1 text-[10px] font-bold rounded-md transition-all", !isManualMode ? "bg-white text-ink shadow-sm" : "text-subtle")}>DATABASE</button>
-                  <button type="button" onClick={() => setIsManualMode(true)} className={cn("px-3 py-1 text-[10px] font-bold rounded-md transition-all", isManualMode ? "bg-white text-ink shadow-sm" : "text-subtle")}>MANUAL</button>
+                <div className="flex bg-gray-100 p-0.5 rounded-lg shadow-inner">
+                  <button type="button" onClick={() => setIsManualMode(false)} className={cn("px-4 py-1.5 text-[11px] font-bold rounded-md transition-all", !isManualMode ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink")}>DATABASE</button>
+                  <button type="button" onClick={() => setIsManualMode(true)} className={cn("px-4 py-1.5 text-[11px] font-bold rounded-md transition-all", isManualMode ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink")}>MANUAL ENTRY</button>
                 </div>
               </div>
               
               {!isManualMode ? (
-                <div className="relative z-[130]">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-                  <input
-                    type="text"
-                    autoFocus
-                    value={search}
-                    onChange={e => setSearch(e.target.value)}
-                    onKeyDown={handleSearchKeyDown}
-                    placeholder="Search database..."
-                    className="w-full pl-12 pr-4 py-3 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500 transition-all"
-                  />
+                <div className="relative z-[130] space-y-3">
+                  <div className="relative">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                    <input
+                      type="text"
+                      autoFocus
+                      value={search}
+                      onChange={e => setSearch(e.target.value)}
+                      onKeyDown={handleSearchKeyDown}
+                      placeholder="Search database..."
+                      className="w-full pl-12 pr-4 py-3 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500 transition-all"
+                    />
+                  </div>
+                  
+                  {!search && (
+                    <button 
+                      type="button" 
+                      onClick={() => setIsManualMode(true)}
+                      className="w-full py-3 border-2 border-dashed border-gray-200 rounded-xl text-gray-400 font-bold text-sm hover:border-accent hover:text-accent transition-all flex items-center justify-center gap-2"
+                    >
+                      <Plus size={18} />
+                      + Manual Quick Add
+                    </button>
+                  )}
+
                   {search && (
                     <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-[0_15px_60px_-15px_rgba(0,0,0,0.3)] border border-gray-100 z-[140] max-h-[300px] overflow-y-auto">
                       {filteredFoods.map(food => (
@@ -2399,33 +2310,52 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                 </div>
               ) : (
                 <div className="bg-gray-50 p-4 rounded-2xl border border-border space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Food Name</label>
-                    <input type="text" value={manualForm.name} onChange={e => setManualForm({...manualForm, name: e.target.value})} placeholder="e.g. Home-made ice cream" className="w-full px-4 py-2.5 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-bold text-ink uppercase tracking-tight">Manual Quick Add</h3>
+                    <div className="flex bg-white p-0.5 rounded-lg border border-gray-200">
+                      <button type="button" onClick={() => setManualForm({...manualForm, isTotal: true})} className={cn("px-2 py-1 text-[9px] font-bold rounded-md transition-all", manualForm.isTotal ? "bg-accent text-white shadow-sm" : "text-subtle")}>TOTAL VALUES</button>
+                      <button type="button" onClick={() => setManualForm({...manualForm, isTotal: false})} className={cn("px-2 py-1 text-[9px] font-bold rounded-md transition-all", !manualForm.isTotal ? "bg-accent text-white shadow-sm" : "text-subtle")}>PER 100G</button>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="col-span-2 space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Food Name</label>
+                      <input type="text" value={manualForm.name} onChange={e => setManualForm({...manualForm, name: e.target.value})} placeholder="e.g. Pizza slice" className="w-full px-4 py-2.5 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Grams</label>
+                      <input type="number" value={manualForm.grams} onChange={e => setManualForm({...manualForm, grams: e.target.value})} placeholder="100" className="w-full px-3 py-2.5 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Kcal</label>
                       <input type="number" value={manualForm.calories} onChange={e => setManualForm({...manualForm, calories: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Prot (g)</label>
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Prot</label>
                       <input type="number" value={manualForm.protein} onChange={e => setManualForm({...manualForm, protein: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Carb (g)</label>
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Carb</label>
                       <input type="number" value={manualForm.carbs} onChange={e => setManualForm({...manualForm, carbs: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fat (g)</label>
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fat</label>
                       <input type="number" value={manualForm.fat} onChange={e => setManualForm({...manualForm, fat: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-green-600 uppercase tracking-widest">Fiber (g)</label>
+                      <label className="text-[10px] font-bold text-green-600 uppercase tracking-widest">Fiber</label>
                       <input type="number" value={manualForm.fiber} onChange={e => setManualForm({...manualForm, fiber: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
                     </div>
                   </div>
-                  <button type="button" onClick={handleAddManual} className="w-full py-2.5 bg-accent text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-green-700 transition-all active:scale-95 shadow-sm">Add Custom Item</button>
+                  
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => setIsManualMode(false)} className="flex-1 py-2.5 bg-white border border-gray-200 text-subtle rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-50 transition-all">Cancel</button>
+                    <button type="button" onClick={handleAddManual} className="flex-[2] py-2.5 bg-accent text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-green-700 transition-all active:scale-95 shadow-sm">Add Item</button>
+                  </div>
                 </div>
               )}
             </div>
@@ -2719,4 +2649,3 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
     </div>
   );
 }
-
