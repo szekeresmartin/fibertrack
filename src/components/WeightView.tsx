@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { format, subDays, differenceInDays } from 'date-fns';
+import { format, subDays } from 'date-fns';
 import { TrendingUp, TrendingDown, Minus, Trash2 } from 'lucide-react';
 import { Meal, Food } from '../types';
 import { cn } from '../lib/utils';
@@ -46,7 +46,7 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
     return () => clearTimeout(timer);
   }, [inputValue, dateStr, currentLog, userId, upsertWeightLog]);
 
-  const weightStats = useWeightStats(weightLogs, meals, foods);
+  const weightStats = useWeightStats(weightLogs, meals, foods, rangeDays);
 
   const chartData = useWeightChartData(weightLogs, rangeDays);
   const dailyNutritionMap = useMemo(() => buildDailyNutritionMap(meals, foods), [meals, foods]);
@@ -113,11 +113,11 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
 
         {/* Maintenance Calories */}
         <div className="bg-white p-8 rounded-[2.5rem] border border-border shadow-sm flex flex-col justify-center items-center text-center">
-          <h3 className="text-sm font-bold text-subtle uppercase tracking-widest mb-6">Estimated Maintenance</h3>
+          <h3 className="text-sm font-bold text-subtle uppercase tracking-widest mb-6">Estimated Maintenance ({weightStats.windowLabel})</h3>
           
           <div className="flex items-center gap-3">
             <div className="text-[56px] font-[800] leading-none text-ink tracking-tight">
-              {weightStats.tdee ? weightStats.tdee : '--'}
+              {weightStats.tdee !== null ? weightStats.tdee : weightStats.hasSufficientData ? '--' : '—'}
             </div>
             <div className="flex flex-col text-left">
               <span className="text-sm font-bold text-subtle">kcal</span>
@@ -125,7 +125,7 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
             </div>
           </div>
 
-          {weightStats.tdee ? (
+          {weightStats.hasSufficientData && weightStats.tdee !== null ? (
             <div className="flex items-center gap-2 mt-6 px-4 py-2 bg-gray-50 rounded-2xl border border-gray-100">
               {weightStats.trendDirection === 'up' ? (
                 <TrendingUp size={16} className="text-red-500" />
@@ -139,7 +139,9 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
               </span>
             </div>
           ) : (
-            <p className="text-xs text-subtle/50 mt-6 italic">Log weight and food for 3+ days</p>
+            <div className="mt-6 rounded-2xl border border-dashed border-border bg-gray-50 px-4 py-3 text-xs text-subtle">
+              Insufficient data for the {weightStats.windowLabel} window. Need at least 3 weight logs and 3 logged calorie days.
+            </div>
           )}
         </div>
       </div>
@@ -149,7 +151,7 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
             <div>
               <h3 className="text-xl font-[800] tracking-tight">Weight Trend</h3>
-              <p className="text-subtle text-xs font-medium">Body weight over time (kg)</p>
+                  <p className="text-subtle text-xs font-medium">Body weight over time (kg) in the selected {rangeDays === 30 ? '30D' : rangeDays === 90 ? '3M' : '6M'} window</p>
             </div>
           <div className="flex flex-wrap gap-2 sm:gap-4 items-center">
             <div className="bg-gray-100/50 p-1 rounded-2xl flex gap-1">
@@ -254,7 +256,7 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
           </ResponsiveContainer>
           ) : (
             <p className="text-subtle text-sm italic flex items-center justify-center h-60 bg-gray-50 rounded-3xl border border-dashed border-border">
-            No weight logs for this period. Add a log or widen the range.
+                No weight logs for the selected {rangeDays === 30 ? '30D' : rangeDays === 90 ? '3M' : '6M'} window.
           </p>
         )
         ) : (

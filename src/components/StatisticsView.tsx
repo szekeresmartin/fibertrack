@@ -10,7 +10,7 @@ import { Loader2, TrendingUp, Pizza, Award, Scale, Flame, Droplets, Wheat, Calen
 import { useWeightStats } from '../lib/hooks/useWeightStats';
 import { useWeightChartData } from '../lib/hooks/useWeightChartData';
 import { useWeightLogs } from '../lib/queries/weightQueries';
-import { buildDailyNutritionMap, computeStats } from '../lib/statsUtils';
+import { computeStats } from '../lib/statsUtils';
 import { normalizeDateToLocal, parseLocalDateInput } from '../lib/dateUtils';
 
 interface StatisticsViewProps {
@@ -26,7 +26,7 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
   const [activeTab, setActiveTab] = React.useState<'overview' | 'details'>('overview');
   const { data: weightLogs = [] } = useWeightLogs(userId);
   
-  const { weeklyTrend, trendDirection } = useWeightStats(weightLogs, meals, foods);
+  const { weeklyTrend, trendDirection, hasSufficientData, windowLabel } = useWeightStats(weightLogs, meals, foods, days);
   const weightChartData = useWeightChartData(weightLogs, days);
   
   const currentStartDate = useMemo(() => {
@@ -71,32 +71,25 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
   }, [previousMeals, foods, previousRange]);
 
   const currentStats = useMemo(() => {
-    if (currentMeals.length === 0) {
-      return null;
-    }
     return computeStats(currentMeals, foods, currentRange.start, currentRange.end, previousStats?.aggregates);
   }, [currentMeals, foods, currentRange, previousStats]);
-
-  const currentDayTotals = useMemo(() => buildDailyNutritionMap(currentMeals, foods), [currentMeals, foods]);
 
   const topFiberContributors = currentStats?.topSources.fiber.contribution ?? [];
   const topMeals = currentStats?.distributions ?? [];
   const lowFiberDays = useMemo(() => {
-    return (Object.entries(currentDayTotals) as Array<[string, { fiber: number; calories: number }]>)
-      .map(([date, totals]) => ({ date, totals }))
-      .filter(({ totals }) => totals.fiber > 0 && totals.fiber < 35)
-      .sort((a, b) => a.totals.fiber - b.totals.fiber)
+    return (currentStats?.calendarDailyData ?? [])
+      .filter(day => day.hasMeals && day.metrics.fiber < 35)
+      .sort((a, b) => a.metrics.fiber - b.metrics.fiber)
       .slice(0, 8)
-      .map(({ date, totals }) => ({ date, metrics: { fiber: totals.fiber, calories: totals.calories } }));
-  }, [currentDayTotals]);
+      .map(day => ({ date: day.date, metrics: { fiber: day.metrics.fiber, calories: day.metrics.calories } }));
+  }, [currentStats?.calendarDailyData]);
 
   const missingDataDays = useMemo(() => {
-    return (Object.entries(currentDayTotals) as Array<[string, { fiber: number; calories: number }]>)
-      .map(([date, totals]) => ({ date, totals }))
-      .filter(({ totals }) => totals.calories === 0 && totals.fiber === 0)
+    return (currentStats?.calendarDailyData ?? [])
+      .filter(day => !day.hasMeals)
       .slice(0, 8)
-      .map(({ date }) => ({ date }));
-  }, [currentDayTotals]);
+      .map(day => ({ date: day.date }));
+  }, [currentStats?.calendarDailyData]);
 
   const vegetableStats = useMemo(() => {
     const statsMap: Record<string, { grams: number; count: number }> = {};
@@ -118,11 +111,6 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
 
   const periodComparison = currentStats?.aggregates.comparisons ?? null;
   const hasComparison = !!previousStats && !!periodComparison;
-  const fiberChartTitle = currentStats.grouping === 'daily'
-    ? 'Daily Fiber Trend'
-    : currentStats.grouping === 'weekly'
-      ? 'Weekly Fiber Trend'
-      : 'Monthly Fiber Trend';
   const chartDailyData = useMemo(() => {
     if (!currentStats) return [];
     return currentStats.dailyData.map(day => ({
@@ -131,6 +119,7 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
       gl: day.metrics.gl
     }));
   }, [currentStats]);
+
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center h-96">
@@ -140,27 +129,15 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
     );
   }
 
-  if (!currentStats) {
-    return (
-      <div className="flex flex-col items-center justify-center h-96 text-center px-6">
-        <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-6">
-          <TrendingUp size={40} className="text-subtle/20" />
-        </div>
-        <h3 className="text-xl font-bold mb-2">No data for this period</h3>
-        <p className="text-subtle text-sm max-w-sm">
-          Log meals in the timeline to see period insights, fiber trends, and low-fiber days.
-        </p>
-        <div className="mt-8 flex flex-wrap gap-2 justify-center">
-          <button onClick={() => setDays(7)} className={cn("px-4 py-2 rounded-xl border text-sm font-bold transition-all", days === 7 ? "bg-ink text-white border-ink" : "bg-white text-subtle border-border")}>This Week</button>
-          <button onClick={() => setDays(30)} className={cn("px-4 py-2 rounded-xl border text-sm font-bold transition-all", days === 30 ? "bg-ink text-white border-ink" : "bg-white text-subtle border-border")}>Last 30 Days</button>
-          <button onClick={() => setDays(3650)} className={cn("px-4 py-2 rounded-xl border text-sm font-bold transition-all", days === 3650 ? "bg-ink text-white border-ink" : "bg-white text-subtle border-border")}>All Time</button>
-        </div>
-      </div>
-    );
-  }
+  const fiberChartTitle = currentStats.grouping === 'daily'
+    ? 'Daily Fiber Trend'
+    : currentStats.grouping === 'weekly'
+      ? 'Weekly Fiber Trend'
+      : 'Monthly Fiber Trend';
+  const fiberRatio = currentStats.aggregates.fiberRatio;
 
   const rangeLabel = days === 7 ? 'This Week' : days === 30 ? 'Last 30 Days' : 'All Time';
-  const fiberRatio = currentStats.aggregates.fiberRatio;
+  const weightWindowLabel = windowLabel;
 
   return (
     <div className="space-y-8 pb-20 animate-in fade-in duration-500">
@@ -191,17 +168,22 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
             <ComparisonChip label="Calories" delta={periodComparison.caloriesDelta} percent={periodComparison.caloriesPercent} positiveIsGood={false} />
           </div>
         )}
+        {!hasComparison && days !== 3650 && (
+          <div className="rounded-2xl border border-dashed border-border bg-gray-50 px-4 py-3 text-sm text-subtle">
+            Comparison unavailable because the previous period has no logged meals.
+          </div>
+        )}
       </div>
 
       {activeTab === 'overview' ? (
         <div className="space-y-8">
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
-            <StatSummaryCard label="Avg Fiber" value={currentStats.aggregates.avgFiber.toFixed(1)} unit="g" icon={<Flame size={20} />} color="bg-green-50 text-green-600" />
-            <StatSummaryCard label="Avg Calories" value={currentStats.aggregates.avgCalories ? Math.round(currentStats.aggregates.avgCalories).toString() : '—'} unit="kcal" icon={<Flame size={20} />} color="bg-orange-50 text-orange-600" />
-            <StatSummaryCard label="Avg Protein" value={currentStats.aggregates.avgProtein ? currentStats.aggregates.avgProtein.toFixed(1) : '—'} unit="g" icon={<Award size={20} />} color="bg-blue-50 text-blue-600" />
-            <StatSummaryCard label="Avg GL" value={currentStats.aggregates.avgGL.toFixed(1)} unit="" icon={<Award size={20} />} color="bg-amber-50 text-amber-600" />
+            <StatSummaryCard label="Avg Fiber / day" value={currentStats.aggregates.avgFiber.toFixed(1)} unit="g" icon={<Flame size={20} />} color="bg-green-50 text-green-600" />
+            <StatSummaryCard label="Avg Calories / day" value={Math.round(currentStats.aggregates.avgCalories).toString()} unit="kcal" icon={<Flame size={20} />} color="bg-orange-50 text-orange-600" />
+            <StatSummaryCard label="Avg Protein / day" value={currentStats.aggregates.avgProtein.toFixed(1)} unit="g" icon={<Award size={20} />} color="bg-blue-50 text-blue-600" />
+            <StatSummaryCard label="Avg GL / day" value={currentStats.aggregates.avgGL.toFixed(1)} unit="" icon={<Award size={20} />} color="bg-amber-50 text-amber-600" />
             <StatSummaryCard label="Fiber Goal" value={`${currentStats.aggregates.consistencyScore}%`} unit="days hit" icon={<CalendarDays size={20} />} color="bg-emerald-50 text-emerald-700" />
-            <StatSummaryCard label="Weight Trend" value={weeklyTrend === 0 ? '—' : Math.abs(weeklyTrend).toFixed(2)} unit={weeklyTrend === 0 ? '' : `kg/wk ${trendDirection === 'up' ? '↑' : trendDirection === 'down' ? '↓' : '→'}`} icon={<Scale size={20} />} color={cn("bg-gray-50 text-gray-600", trendDirection === 'down' && "bg-green-50 text-green-600", trendDirection === 'up' && "bg-red-50 text-red-600")} />
+            <StatSummaryCard label={`Weight Trend (${weightWindowLabel})`} value={!hasSufficientData ? 'Insufficient' : Math.abs(weeklyTrend).toFixed(2)} unit={!hasSufficientData ? '' : `kg/wk ${trendDirection === 'up' ? '↑' : trendDirection === 'down' ? '↓' : '→'}`} icon={<Scale size={20} />} color={cn("bg-gray-50 text-gray-600", trendDirection === 'down' && hasSufficientData && "bg-green-50 text-green-600", trendDirection === 'up' && hasSufficientData && "bg-red-50 text-red-600")} />
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -360,9 +342,9 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
             <ChartContainer title="Period Summary" subtitle="Useful context for the selected range">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <SummaryPill label="Total meals" value={currentStats.aggregates.totalMeals.toString()} />
-                <SummaryPill label="Active days" value={currentStats.aggregates.activeDays.toString()} />
-                <SummaryPill label="Avg GL" value={currentStats.aggregates.avgGL.toFixed(1)} />
-                <SummaryPill label="Avg fiber" value={`${currentStats.aggregates.avgFiber.toFixed(1)}g`} />
+                <SummaryPill label="Logged days" value={currentStats.aggregates.loggedDays.toString()} />
+                <SummaryPill label="Coverage" value={`${currentStats.aggregates.coveragePercent}%`} />
+                <SummaryPill label="Avg fiber / day" value={`${currentStats.aggregates.avgFiber.toFixed(1)}g`} />
               </div>
             </ChartContainer>
           </div>

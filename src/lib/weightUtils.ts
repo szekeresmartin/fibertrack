@@ -53,7 +53,7 @@ export function calculateWeightTrend(logs: WeightLog[], days: number = 30): { we
   }
 
   const now = new Date();
-  const cutoff = subDays(now, days);
+  const cutoff = subDays(now, Math.max(days - 1, 0));
   const activeWeights = sorted.filter(log => log.parsedDate && log.parsedDate >= cutoff);
 
   if (activeWeights.length < 3) {
