@@ -1,13 +1,14 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format, subDays, differenceInDays } from 'date-fns';
-import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, Trash2 } from 'lucide-react';
 import { Meal, Food } from '../types';
 import { calculateMealTotals, getFoodOrUnknown, cn } from '../lib/utils';
 import { WeightLog } from '../lib/weightUtils';
-import { useWeightLogs, useUpsertWeightLog } from '../lib/queries/weightQueries';
+import { useWeightLogs, useUpsertWeightLog, useDeleteWeightLog } from '../lib/queries/weightQueries';
 import { useWeightStats } from '../lib/hooks/useWeightStats';
 import { useWeightChartData } from '../lib/hooks/useWeightChartData';
+import { normalizeDateToLocal } from '../lib/dateUtils';
 
 interface WeightViewProps {
   userId: string;
@@ -18,8 +19,10 @@ interface WeightViewProps {
 
 export default function WeightView({ userId, selectedDate, meals, foods }: WeightViewProps) {
   const [rangeDays, setRangeDays] = useState<30 | 90 | 180>(30);
+  const [viewMode, setViewMode] = useState<'chart' | 'table'>('chart');
   const { data: weightLogs = [] } = useWeightLogs(userId);
   const upsertWeightLog = useUpsertWeightLog();
+  const deleteWeightLog = useDeleteWeightLog();
 
   const dateStr = format(selectedDate, 'yyyy-MM-dd');
   const currentLog = useMemo(() => weightLogs.find(l => l.date === dateStr), [weightLogs, dateStr]);
@@ -46,6 +49,51 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
   const weightStats = useWeightStats(weightLogs, meals, foods);
 
   const chartData = useWeightChartData(weightLogs, rangeDays);
+
+  const tableData = useMemo(() => {
+    const data = [];
+    const endDate = new Date();
+    const sortedLogs = [...weightLogs].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    
+    for (let i = 0; i < rangeDays; i++) {
+      const date = subDays(endDate, i);
+      const dateStr = normalizeDateToLocal(date);
+      
+      const log = sortedLogs.find(l => normalizeDateToLocal(l.date) === dateStr);
+      
+      const dayMeals = meals.filter(m => {
+        if (!m.created_at) return false;
+        return normalizeDateToLocal(m.created_at) === dateStr;
+      });
+      const dayCalories = dayMeals.reduce((sum, meal) => {
+        const mealItems = (meal.items || []).map(item => ({
+          food: getFoodOrUnknown(foods, item.foodId),
+          quantity: item.quantityGrams,
+          customMacros: item
+        }));
+        return sum + calculateMealTotals(mealItems).calories;
+      }, 0);
+
+      data.push({
+        date,
+        dateStr,
+        weight: log ? log.weight : null,
+        calories: dayCalories > 0 ? Math.round(dayCalories) : null,
+      });
+    }
+    return data;
+  }, [weightLogs, rangeDays, meals, foods]);
+
+  const handleTableWeightEdit = (dateStr: string, weightVal: string) => {
+    if (weightVal === '') {
+      deleteWeightLog.mutate({ userId, date: dateStr });
+    } else {
+      const val = parseFloat(weightVal);
+      if (!isNaN(val) && val > 0) {
+        upsertWeightLog.mutate({ userId, date: dateStr, weight: val });
+      }
+    }
+  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in duration-500 py-6">
@@ -112,38 +160,62 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
             <h3 className="text-xl font-[800] tracking-tight">Weight Trend</h3>
             <p className="text-subtle text-xs font-medium">Body weight over time (kg)</p>
           </div>
-          <div className="bg-gray-100/50 p-1 rounded-2xl flex gap-1">
-            <button 
-              onClick={() => setRangeDays(30)}
-              className={cn(
-                "px-4 py-2 rounded-xl text-sm font-bold transition-all",
-                rangeDays === 30 ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink"
-              )}
-            >
-              30D
-            </button>
-            <button 
-              onClick={() => setRangeDays(90)}
-              className={cn(
-                "px-4 py-2 rounded-xl text-sm font-bold transition-all",
-                rangeDays === 90 ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink"
-              )}
-            >
-              3M
-            </button>
-            <button 
-              onClick={() => setRangeDays(180)}
-              className={cn(
-                "px-4 py-2 rounded-xl text-sm font-bold transition-all",
-                rangeDays === 180 ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink"
-              )}
-            >
-              6M
-            </button>
+          <div className="flex flex-wrap gap-2 sm:gap-4 items-center">
+            <div className="bg-gray-100/50 p-1 rounded-2xl flex gap-1">
+              <button 
+                onClick={() => setViewMode('chart')}
+                className={cn(
+                  "px-4 py-2 rounded-xl text-sm font-bold transition-all",
+                  viewMode === 'chart' ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink"
+                )}
+              >
+                Chart
+              </button>
+              <button 
+                onClick={() => setViewMode('table')}
+                className={cn(
+                  "px-4 py-2 rounded-xl text-sm font-bold transition-all",
+                  viewMode === 'table' ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink"
+                )}
+              >
+                Table
+              </button>
+            </div>
+            
+            <div className="bg-gray-100/50 p-1 rounded-2xl flex gap-1">
+              <button 
+                onClick={() => setRangeDays(30)}
+                className={cn(
+                  "px-4 py-2 rounded-xl text-sm font-bold transition-all",
+                  rangeDays === 30 ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink"
+                )}
+              >
+                30D
+              </button>
+              <button 
+                onClick={() => setRangeDays(90)}
+                className={cn(
+                  "px-4 py-2 rounded-xl text-sm font-bold transition-all",
+                  rangeDays === 90 ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink"
+                )}
+              >
+                3M
+              </button>
+              <button 
+                onClick={() => setRangeDays(180)}
+                className={cn(
+                  "px-4 py-2 rounded-xl text-sm font-bold transition-all",
+                  rangeDays === 180 ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink"
+                )}
+              >
+                6M
+              </button>
+            </div>
           </div>
         </div>
 
-        {chartData && chartData.length > 0 ? (
+        {viewMode === 'chart' ? (
+          chartData && chartData.length > 0 ? (
           <ResponsiveContainer width="100%" height={350}>
             <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
@@ -193,6 +265,64 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
           <p className="text-subtle text-sm italic flex items-center justify-center h-60 bg-gray-50 rounded-3xl border border-dashed border-border">
             No weight logs for this period.
           </p>
+        )
+        ) : (
+          <div className="w-full">
+            <table className="w-full text-left border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-[11px] font-bold text-subtle uppercase tracking-widest sticky top-0 bg-white/95 backdrop-blur-sm z-10">
+                  <th className="py-2.5 px-3">Date</th>
+                  <th className="py-2.5 px-3">Weight (kg)</th>
+                  <th className="py-2.5 px-3 text-right">Calories</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tableData.map((row, idx) => (
+                  <tr key={row.dateStr} className={cn("border-b border-gray-50 hover:bg-gray-50/50 transition-colors", idx % 2 === 0 ? "bg-white" : "bg-gray-50/30")}>
+                    <td className="py-1.5 px-3">
+                      <div className="font-bold text-ink">{format(row.date, 'MMM d, yyyy')}</div>
+                    </td>
+                    <td className="py-1.5 px-3">
+                      <div className="flex items-center gap-2 group">
+                        <input
+                          type="number"
+                          step="0.1"
+                          defaultValue={row.weight || ''}
+                          placeholder="—"
+                          onBlur={(e) => handleTableWeightEdit(row.dateStr, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              handleTableWeightEdit(row.dateStr, e.currentTarget.value);
+                              e.currentTarget.blur();
+                            }
+                          }}
+                          className="w-16 bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-accent/20 rounded px-1.5 py-1 font-bold text-ink transition-all placeholder:text-gray-300"
+                        />
+                        {row.weight !== null && (
+                          <button 
+                            onClick={() => {
+                              deleteWeightLog.mutate({ userId, date: row.dateStr });
+                            }}
+                            className="opacity-0 group-hover:opacity-100 p-1 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                            title="Delete entry"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-1.5 px-3 text-right font-mono text-[13px]">
+                      {row.calories ? (
+                        <span className="font-medium text-subtle/70">{row.calories} <span className="text-[10px] font-sans">kcal</span></span>
+                      ) : (
+                        <span className="text-gray-200">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

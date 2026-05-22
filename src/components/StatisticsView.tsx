@@ -111,8 +111,11 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
           protein: acc.protein + mealTotals.protein,
           carbs: acc.carbs + mealTotals.carbs,
           fat: acc.fat + mealTotals.fat,
+          soluble_fiber: acc.soluble_fiber + mealTotals.soluble_fiber,
+          insoluble_fiber: acc.insoluble_fiber + mealTotals.insoluble_fiber,
+          total_fiber: acc.total_fiber + mealTotals.total_fiber,
         };
-      }, { calories: 0, protein: 0, carbs: 0, fat: 0 });
+      }, { calories: 0, protein: 0, carbs: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0 });
 
       return {
         date: format(date, 'EEE'),
@@ -120,8 +123,17 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
         protein: Number(totals.protein.toFixed(1)),
         carbs: Number(totals.carbs.toFixed(1)),
         fat: Number(totals.fat.toFixed(1)),
+        soluble_fiber: Number(totals.soluble_fiber.toFixed(1)),
+        insoluble_fiber: Number(totals.insoluble_fiber.toFixed(1)),
+        total_fiber: Number(totals.total_fiber.toFixed(1)),
       };
     });
+
+    const weekTotalSoluble = dailyMacroData.reduce((sum, d) => sum + d.soluble_fiber, 0);
+    const weekTotalInsoluble = dailyMacroData.reduce((sum, d) => sum + d.insoluble_fiber, 0);
+    const weekFiberSum = weekTotalSoluble + weekTotalInsoluble;
+    const avgSolublePercent = weekFiberSum > 0 ? (weekTotalSoluble / weekFiberSum) * 100 : 0;
+    const avgInsolublePercent = weekFiberSum > 0 ? (weekTotalInsoluble / weekFiberSum) * 100 : 0;
 
     return {
       uniqueVeg: Array.from(uniqueVeg),
@@ -130,6 +142,8 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
       categoryDistData,
       macroDistData,
       dailyMacroData,
+      avgSolublePercent,
+      avgInsolublePercent,
       overview: {
         protein: totalProtein,
         carbs: totalCarbs,
@@ -564,6 +578,48 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
                 <Bar dataKey="carbs" stackId="a" fill="#f59e0b" name="Carbs (g)" radius={[0, 0, 0, 0]} />
                 <Bar dataKey="fat" stackId="a" fill="#a855f7" name="Fat (g)" radius={[4, 4, 0, 0]} />
               </BarChart>
+            </ResponsiveContainer>
+          </ChartContainer>
+
+          <ChartContainer title="Weekly Fiber Types" subtitle="Soluble vs Insoluble fiber intake (grams)">
+            <div className="mb-6 flex gap-4">
+              <div className="bg-blue-50/50 px-4 py-2 rounded-xl border border-blue-100 flex-1 flex justify-between items-center">
+                <span className="text-xs font-bold text-blue-800 uppercase tracking-widest">Soluble</span>
+                <span className="text-lg font-black text-blue-600">{thisWeekStats.avgSolublePercent.toFixed(0)}%</span>
+              </div>
+              <div className="bg-orange-50/50 px-4 py-2 rounded-xl border border-orange-100 flex-1 flex justify-between items-center">
+                <span className="text-xs font-bold text-orange-800 uppercase tracking-widest">Insoluble</span>
+                <span className="text-lg font-black text-orange-600">{thisWeekStats.avgInsolublePercent.toFixed(0)}%</span>
+              </div>
+            </div>
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={thisWeekStats.dailyMacroData}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#94a3b8'}} dy={10} />
+                <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#94a3b8'}} />
+                <Tooltip 
+                  contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                  formatter={(value: number, name: string) => [`${value}g`, name === 'soluble_fiber' ? 'Soluble' : name === 'insoluble_fiber' ? 'Insoluble' : name]}
+                  labelFormatter={(label) => `Day: ${label}`}
+                />
+                <Legend verticalAlign="top" height={36} iconType="circle" formatter={(value) => value === 'soluble_fiber' ? 'Soluble Fiber' : 'Insoluble Fiber'} />
+                <Line 
+                  type="monotone" 
+                  dataKey="soluble_fiber" 
+                  stroke="#3b82f6" 
+                  strokeWidth={4} 
+                  dot={{ r: 4, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff' }}
+                  activeDot={{ r: 6, strokeWidth: 0 }}
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="insoluble_fiber" 
+                  stroke="#f97316" 
+                  strokeWidth={4} 
+                  dot={{ r: 4, fill: '#f97316', strokeWidth: 2, stroke: '#fff' }}
+                  activeDot={{ r: 6, strokeWidth: 0 }}
+                />
+              </LineChart>
             </ResponsiveContainer>
           </ChartContainer>
         </div>

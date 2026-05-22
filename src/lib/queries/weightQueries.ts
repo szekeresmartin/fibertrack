@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchWeightLogs, upsertWeightLog } from '../services/weightService';
+import { fetchWeightLogs, upsertWeightLog, deleteWeightLog } from '../services/weightService';
 import { WeightLog } from '../weightUtils';
 
 export const WEIGHT_LOGS_QUERY_KEY = ['weightLogs'];
@@ -43,6 +43,42 @@ export function useUpsertWeightLog() {
           return old.map(log => log.date === variables.date ? optimisticLog : log);
         }
         return [...old, optimisticLog].sort((a, b) => a.date.localeCompare(b.date));
+      });
+
+      return { previousLogs };
+    },
+    onError: (_err, variables, context) => {
+      const queryKey = [...WEIGHT_LOGS_QUERY_KEY, { userId: variables.userId }];
+      if (context?.previousLogs) {
+        queryClient.setQueryData(queryKey, context.previousLogs);
+      }
+    },
+    onSuccess: (_, variables) => {
+      const queryKey = [...WEIGHT_LOGS_QUERY_KEY, { userId: variables.userId }];
+      queryClient.invalidateQueries({ queryKey });
+    },
+  });
+}
+
+/**
+ * Hook to delete a weight log using the weight service.
+ */
+export function useDeleteWeightLog() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ userId, date }: { userId: string; date: string }) => {
+      return deleteWeightLog(userId, date);
+    },
+    onMutate: async (variables): Promise<{ previousLogs?: WeightLog[] }> => {
+      const queryKey = [...WEIGHT_LOGS_QUERY_KEY, { userId: variables.userId }];
+      await queryClient.cancelQueries({ queryKey });
+
+      const previousLogs = queryClient.getQueryData<WeightLog[]>(queryKey);
+
+      queryClient.setQueryData<WeightLog[]>(queryKey, (old) => {
+        if (!old) return [];
+        return old.filter(log => log.date !== variables.date);
       });
 
       return { previousLogs };

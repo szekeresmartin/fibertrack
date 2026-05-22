@@ -31,3 +31,16 @@ export async function upsertWeightLog(userId: string, date: string, weight: numb
   if (error) throw error;
   return data;
 }
+
+/**
+ * Service to delete a weight log in Supabase.
+ */
+export async function deleteWeightLog(userId: string, date: string) {
+  const { error } = await supabase
+    .from('weight_entries')
+    .delete()
+    .eq('user_id', userId)
+    .eq('date', date);
+
+  if (error) throw error;
+}

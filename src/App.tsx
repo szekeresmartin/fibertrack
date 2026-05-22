@@ -237,7 +237,9 @@ export default function App() {
       setIsStatsLoading(true);
       const endDate = new Date();
       const startDate = new Date();
-      startDate.setDate(endDate.getDate() - statsDays);
+      
+      const fetchDays = view === 'weight' ? 180 : statsDays;
+      startDate.setDate(endDate.getDate() - fetchDays);
 
       const { data, error } = await supabase
         .from('meals')
