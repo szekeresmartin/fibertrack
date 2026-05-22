@@ -1,4 +1,5 @@
 import { differenceInDays, subDays } from 'date-fns';
+import { parseLocalDateInput } from './dateUtils';
 
 export interface WeightLog {
   date: string; // YYYY-MM-DD
@@ -11,14 +12,20 @@ export interface WeightLog {
  */
 export function calculateMovingAverage(logs: WeightLog[], windowSizeDays: number = 7): (WeightLog & { movingAverage: number | null })[] {
   const sorted = [...logs]
-    .map(log => ({ ...log, parsedDate: typeof log.date === 'string' ? new Date(log.date) : log.date }))
+    .map(log => ({ ...log, parsedDate: parseLocalDateInput(log.date) }))
     .sort((a, b) => a.date.localeCompare(b.date));
 
   return sorted.map((log, index) => {
+    if (!log.parsedDate) {
+      return { date: log.date, weight: log.weight, movingAverage: null };
+    }
+
     // Find all logs within the [date - windowSizeDays + 1, date] range
     const window = [];
     for (let i = index; i >= 0; i--) {
-      const diff = differenceInDays(log.parsedDate, sorted[i].parsedDate);
+      const candidateDate = sorted[i].parsedDate;
+      if (!candidateDate) continue;
+      const diff = differenceInDays(log.parsedDate, candidateDate);
       if (diff >= windowSizeDays) break;
       window.push(sorted[i]);
     }
@@ -38,7 +45,7 @@ export function calculateMovingAverage(logs: WeightLog[], windowSizeDays: number
  */
 export function calculateWeightTrend(logs: WeightLog[], days: number = 30): { weeklyTrend: number; direction: 'up' | 'down' | 'stable' } {
   const sorted = [...logs]
-    .map(log => ({ ...log, parsedDate: typeof log.date === 'string' ? new Date(log.date) : log.date }))
+    .map(log => ({ ...log, parsedDate: parseLocalDateInput(log.date) }))
     .sort((a, b) => a.date.localeCompare(b.date));
   
   if (sorted.length < 3) {
@@ -47,7 +54,7 @@ export function calculateWeightTrend(logs: WeightLog[], days: number = 30): { we
 
   const now = new Date();
   const cutoff = subDays(now, days);
-  const activeWeights = sorted.filter(log => log.parsedDate >= cutoff);
+  const activeWeights = sorted.filter(log => log.parsedDate && log.parsedDate >= cutoff);
 
   if (activeWeights.length < 3) {
     return { weeklyTrend: 0, direction: 'stable' };
@@ -58,7 +65,7 @@ export function calculateWeightTrend(logs: WeightLog[], days: number = 30): { we
   const n = activeWeights.length;
 
   activeWeights.forEach(log => {
-    const x = differenceInDays(log.parsedDate, firstDate);
+    const x = differenceInDays(log.parsedDate!, firstDate!);
     const y = log.weight;
     sumX += x;
     sumY += y;

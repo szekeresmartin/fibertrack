@@ -1,6 +1,7 @@
 import { Food, Meal } from '../types';
 import { calculateItemGL, getFoodOrUnknown, calculateMealTotals } from './utils';
 import { format, parseISO } from 'date-fns';
+import { normalizeDateToLocal } from './dateUtils';
 
 /**
  * Normalizes the daily data and triggers a CSV download.
@@ -175,7 +176,9 @@ export const generateRangeSummaryText = (
   const grouped: Record<string, Meal[]> = {};
   meals.forEach(m => {
     // meals have created_at as ISO string or something similar
-    const d = format(parseISO(m.created_at || ''), 'yyyy.MM.dd');
+    const dateKey = normalizeDateToLocal(m.created_at);
+    if (!dateKey) return;
+    const d = format(parseISO(dateKey), 'yyyy.MM.dd');
     if (!grouped[d]) grouped[d] = [];
     grouped[d].push(m);
   });

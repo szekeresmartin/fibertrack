@@ -44,6 +44,38 @@ export function calculateItemGL(food: Food, quantity: number): number {
   return (gi * carbs * quantity) / 10000;
 }
 
+export function isConservativeVegetable(food: Food): boolean {
+  if (!food) return false;
+  if (food.category !== 'vegetable') return false;
+
+  const text = `${food.name_hu || ''} ${food.name_en || ''} ${food.brand || ''}`.toLowerCase();
+  const obviousFalsePositives = [
+    'bread',
+    'pizza',
+    'pasta',
+    'rice',
+    'pastry',
+    'pastries',
+    'cake',
+    'cookie',
+    'snack',
+    'chips',
+    'crisps',
+    'sauce',
+    'soup',
+    'mixed',
+    'processed',
+    'sandwich',
+    'wrap',
+    'burger',
+    'ketchup',
+    'mayo',
+    'mayonnaise'
+  ];
+
+  return !obviousFalsePositives.some(term => text.includes(term));
+}
+
 export function calculateMealTotals(items: { food?: Food; quantity: number; customMacros?: Partial<MealItem> }[]) {
   return items.reduce(
     (acc, item) => {
@@ -78,7 +110,7 @@ export function calculateMealTotals(items: { food?: Food; quantity: number; cust
       }
       
       const itemGL = calculateItemGL(foodToUse, item.quantity);
-      const isVegetable = foodToUse.category === 'vegetable';
+      const isVegetable = isConservativeVegetable(foodToUse);
 
       return {
         calories: acc.calories + (foodToUse.calories || 0) * factor,

@@ -1,4 +1,4 @@
-import{r as u,j as a,s as A}from"./index-CTOe4FWU.js";function r(i){return i==null||isNaN(i)?null:Math.round(i*10)/10}async function T(i){const c=i.trim(),{data:e,error:s}=await A.from("foods").select(`
+import{r as u,j as a,s as A}from"./index-N88YdJJZ.js";function r(i){return i==null||isNaN(i)?null:Math.round(i*10)/10}async function T(i){const c=i.trim(),{data:e,error:s}=await A.from("foods").select(`
       name_hu, name_en, brand,
       calories, protein, carbs, fat,
       total_fiber, soluble_fiber, insoluble_fiber, gi,

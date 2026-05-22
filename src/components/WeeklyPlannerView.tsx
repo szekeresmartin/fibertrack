@@ -13,6 +13,7 @@ import { format, startOfWeek, addWeeks, subWeeks, endOfWeek } from 'date-fns';
 import { generateWeeklyPlanText } from '../lib/exportUtils';
 import { supabase } from '../lib/supabase';
 import { User } from '@supabase/supabase-js';
+import { isConservativeVegetable } from '../lib/utils';
 
 interface WeeklyPlannerViewProps {
   foods: Food[];
@@ -211,7 +212,7 @@ export default function WeeklyPlannerView({ foods, user }: WeeklyPlannerViewProp
     // Calculate Vegetable Count (Planned)
     const vegCount = items.filter(item => {
       const food = getFoodOrUnknown(foods, item.foodId);
-      return food.category === 'vegetable';
+      return isConservativeVegetable(food);
     }).length;
 
     return { ...totals, vegetable_count: vegCount };
@@ -228,7 +229,7 @@ export default function WeeklyPlannerView({ foods, user }: WeeklyPlannerViewProp
     const vegCount = weeklyMeals.reduce((count, m) => {
       const mealVegItems = (m.meal_items || []).filter((mi: any) => {
         const food = getFoodOrUnknown(foods, mi.food_id);
-        return food.category === 'vegetable';
+        return isConservativeVegetable(food);
       });
       return count + mealVegItems.length;
     }, 0);
@@ -483,7 +484,7 @@ export default function WeeklyPlannerView({ foods, user }: WeeklyPlannerViewProp
                   {filteredFoods.map(food => (
                     <button key={food.id} onClick={() => addItem(food)} className="w-full flex items-center justify-between p-4 rounded-2xl hover:bg-gray-50 transition-all border border-transparent hover:border-gray-100 active:scale-[0.98] group">
                       <div className="text-left">
-                        <div className="font-black text-ink">{food.name_hu} {food.category === 'vegetable' && <Leaf size={14} className="inline text-emerald-500 ml-1" />}</div>
+                        <div className="font-black text-ink">{food.name_hu} {isConservativeVegetable(food) && <Leaf size={14} className="inline text-emerald-500 ml-1" />}</div>
                         <div className="text-xs font-bold text-subtle uppercase tracking-wider mt-1">{Math.round(food.calories)} kcal • {Math.round(food.protein)}P {Math.round(food.carbs)}C {Math.round(food.fat)}F</div>
                       </div>
                       <Plus size={20} className="text-subtle group-hover:text-accent group-hover:rotate-90 transition-all" />
@@ -531,7 +532,7 @@ function MacroProgress({ label, current, target, color, unit = 'g', isActual = f
 function PlannedItemCard({ item, food, actualGrams, onRemove, onUpdateQuantity }: { key?: string | number, item: PlannedItem, food: Food, actualGrams: number, onRemove: () => void, onUpdateQuantity: (v: number) => void }) {
   const factor = item.quantityGrams / 100;
   const adherencePercent = Math.min((actualGrams / (item.quantityGrams || 1)) * 100, 100);
-  const isVeg = food.category === 'vegetable';
+  const isVeg = isConservativeVegetable(food);
   return (
     <motion.div layout initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, scale: 0.95 }} className="bg-white p-5 rounded-[2rem] border border-border shadow-sm group hover:border-accent/20 transition-all overflow-hidden relative">
       <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-50">

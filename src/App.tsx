@@ -43,6 +43,7 @@ import UnifiedExportModal from './components/UnifiedExportModal';
 import DatePickerModal from './components/DatePickerModal';
 import { supabase } from './lib/supabase';
 import { User } from '@supabase/supabase-js';
+import { getLocalDayBounds } from './lib/dateUtils';
 
 // No mock authentication, fully relying on Supabase state.
 
@@ -122,7 +123,7 @@ export default function App() {
   });
   const [view, setView] = useState<'timeline' | 'database' | 'statistics' | 'planner' | 'weight'>('timeline');
   const [statsMeals, setStatsMeals] = useState<Meal[]>([]);
-  const [statsDays, setStatsDays] = useState<7 | 30 | 90>(7);
+  const [statsDays, setStatsDays] = useState<7 | 30 | 90 | 3650>(7);
   const [isStatsLoading, setIsStatsLoading] = useState(false);
   const [isMealModalOpen, setIsMealModalOpen] = useState(false);
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
@@ -177,11 +178,7 @@ export default function App() {
     if (!user) return;
 
     const fetchMeals = async () => {
-      const startOfDay = new Date(selectedDate);
-      startOfDay.setHours(0, 0, 0, 0);
-
-      const endOfDay = new Date(selectedDate);
-      endOfDay.setHours(23, 59, 59, 999);
+      const { start: startOfDay, end: endOfDay } = getLocalDayBounds(selectedDate);
 
       const { data, error } = await supabase
         .from('meals')
@@ -236,10 +233,10 @@ export default function App() {
     const fetchStatsData = async () => {
       setIsStatsLoading(true);
       const endDate = new Date();
-      const startDate = new Date();
-      
-      const fetchDays = view === 'weight' ? 180 : statsDays;
-      startDate.setDate(endDate.getDate() - fetchDays);
+      const fetchDays = view === 'weight' ? 180 : (statsDays === 3650 ? 3650 : statsDays * 2);
+      const startDate = subDays(endDate, fetchDays - 1);
+      const { end: endBoundary } = getLocalDayBounds(endDate);
+      const { start: startOfRange } = getLocalDayBounds(startDate);
 
       const { data, error } = await supabase
         .from('meals')
@@ -251,8 +248,8 @@ export default function App() {
           )
         `)
         .eq('user_id', user.id)
-        .gte('created_at', startDate.toISOString())
-        .lte('created_at', endDate.toISOString());
+        .gte('created_at', startOfRange.toISOString())
+        .lte('created_at', endBoundary.toISOString());
 
       if (error) {
         console.error('Error fetching stats meals:', error);
@@ -506,15 +503,14 @@ export default function App() {
     if (meals.length === 0) { showToast('No meals to duplicate today', 'error'); return; }
 
     // Check for existing meals on target date
-    const startOfTarget = `${targetDateStr}T00:00:00.000Z`;
-    const endOfTarget = `${targetDateStr}T23:59:59.999Z`;
+    const { start: startOfTarget, end: endOfTarget } = getLocalDayBounds(targetDateStr);
     
     const { data: existingMeals, error: checkError } = await supabase
       .from('meals')
       .select('id')
       .eq('user_id', user.id)
-      .gte('created_at', startOfTarget)
-      .lte('created_at', endOfTarget);
+      .gte('created_at', startOfTarget.toISOString())
+      .lte('created_at', endOfTarget.toISOString());
 
     if (checkError) {
       console.error('Error checking meals:', checkError);

@@ -9,6 +9,7 @@ import { supabase } from '../lib/supabase';
 import { buildExportRows } from '../lib/statsUtils';
 import { generateRangeSummaryText } from '../lib/exportUtils';
 import { cn, getFriendlyErrorMessage } from '../lib/utils';
+import { getLocalDayBounds } from '../lib/dateUtils';
 
 interface UnifiedExportModalProps {
   isOpen: boolean;
@@ -40,8 +41,8 @@ export default function UnifiedExportModal({
         .from('meals')
         .select('*, meal_items(food_id, grams, name, calories, protein, carbs, fat, is_custom)')
         .eq('user_id', user_id)
-        .gte('created_at', `${range.start}T00:00:00Z`)
-        .lte('created_at', `${range.end}T23:59:59Z`);
+        .gte('created_at', getLocalDayBounds(range.start).start.toISOString())
+        .lte('created_at', getLocalDayBounds(range.end).end.toISOString());
 
       if (error) throw error;
       if (!data || data.length === 0) {
@@ -87,8 +88,8 @@ export default function UnifiedExportModal({
         .from('meals')
         .select('*, meal_items(food_id, grams, name, calories, protein, carbs, fat, is_custom)')
         .eq('user_id', user_id)
-        .gte('created_at', `${range.start}T00:00:00Z`)
-        .lte('created_at', `${range.end}T23:59:59Z`);
+        .gte('created_at', getLocalDayBounds(range.start).start.toISOString())
+        .lte('created_at', getLocalDayBounds(range.end).end.toISOString());
 
       if (error) throw error;
       if (!data || data.length === 0) {

@@ -3,12 +3,12 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { format, subDays, differenceInDays } from 'date-fns';
 import { TrendingUp, TrendingDown, Minus, Trash2 } from 'lucide-react';
 import { Meal, Food } from '../types';
-import { calculateMealTotals, getFoodOrUnknown, cn } from '../lib/utils';
-import { WeightLog } from '../lib/weightUtils';
+import { cn } from '../lib/utils';
 import { useWeightLogs, useUpsertWeightLog, useDeleteWeightLog } from '../lib/queries/weightQueries';
 import { useWeightStats } from '../lib/hooks/useWeightStats';
 import { useWeightChartData } from '../lib/hooks/useWeightChartData';
-import { normalizeDateToLocal } from '../lib/dateUtils';
+import { normalizeDateToLocal, parseLocalDateInput } from '../lib/dateUtils';
+import { buildDailyNutritionMap } from '../lib/statsUtils';
 
 interface WeightViewProps {
   userId: string;
@@ -24,8 +24,8 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
   const upsertWeightLog = useUpsertWeightLog();
   const deleteWeightLog = useDeleteWeightLog();
 
-  const dateStr = format(selectedDate, 'yyyy-MM-dd');
-  const currentLog = useMemo(() => weightLogs.find(l => l.date === dateStr), [weightLogs, dateStr]);
+  const dateStr = normalizeDateToLocal(selectedDate);
+  const currentLog = useMemo(() => weightLogs.find(l => normalizeDateToLocal(l.date) === dateStr), [weightLogs, dateStr]);
 
   const [inputValue, setInputValue] = useState('');
 
@@ -49,11 +49,12 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
   const weightStats = useWeightStats(weightLogs, meals, foods);
 
   const chartData = useWeightChartData(weightLogs, rangeDays);
+  const dailyNutritionMap = useMemo(() => buildDailyNutritionMap(meals, foods), [meals, foods]);
 
   const tableData = useMemo(() => {
     const data = [];
     const endDate = new Date();
-    const sortedLogs = [...weightLogs].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const sortedLogs = [...weightLogs].sort((a, b) => a.date.localeCompare(b.date));
     
     for (let i = 0; i < rangeDays; i++) {
       const date = subDays(endDate, i);
@@ -61,28 +62,18 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
       
       const log = sortedLogs.find(l => normalizeDateToLocal(l.date) === dateStr);
       
-      const dayMeals = meals.filter(m => {
-        if (!m.created_at) return false;
-        return normalizeDateToLocal(m.created_at) === dateStr;
-      });
-      const dayCalories = dayMeals.reduce((sum, meal) => {
-        const mealItems = (meal.items || []).map(item => ({
-          food: getFoodOrUnknown(foods, item.foodId),
-          quantity: item.quantityGrams,
-          customMacros: item
-        }));
-        return sum + calculateMealTotals(mealItems).calories;
-      }, 0);
+      const dayEntry = dailyNutritionMap[dateStr];
+      const dayCalories = dayEntry ? Math.round(dayEntry.calories) : null;
 
       data.push({
         date,
         dateStr,
         weight: log ? log.weight : null,
-        calories: dayCalories > 0 ? Math.round(dayCalories) : null,
+        calories: dayCalories,
       });
     }
     return data;
-  }, [weightLogs, rangeDays, meals, foods]);
+  }, [weightLogs, rangeDays, dailyNutritionMap]);
 
   const handleTableWeightEdit = (dateStr: string, weightVal: string) => {
     if (weightVal === '') {
@@ -155,11 +146,11 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
 
       {/* Chart */}
       <div className="bg-white p-8 rounded-[2.5rem] border border-border shadow-sm">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
-          <div>
-            <h3 className="text-xl font-[800] tracking-tight">Weight Trend</h3>
-            <p className="text-subtle text-xs font-medium">Body weight over time (kg)</p>
-          </div>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
+            <div>
+              <h3 className="text-xl font-[800] tracking-tight">Weight Trend</h3>
+              <p className="text-subtle text-xs font-medium">Body weight over time (kg)</p>
+            </div>
           <div className="flex flex-wrap gap-2 sm:gap-4 items-center">
             <div className="bg-gray-100/50 p-1 rounded-2xl flex gap-1">
               <button 
@@ -224,7 +215,7 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
                 axisLine={false} 
                 tickLine={false} 
                 tick={{fontSize: 12, fill: '#94a3b8'}}
-                tickFormatter={(val) => format(new Date(val), 'MMM d')}
+                  tickFormatter={(val) => format(parseLocalDateInput(val) || new Date(), 'MMM d')}
                 dy={10}
               />
               <YAxis 
@@ -237,7 +228,7 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
               <Tooltip 
                 contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                 cursor={{ stroke: '#8b5cf6', strokeWidth: 2 }}
-                labelFormatter={(val) => format(new Date(val), 'MMMM d, yyyy')}
+                  labelFormatter={(val) => format(parseLocalDateInput(val) || new Date(), 'MMMM d, yyyy')}
               />
               <Line 
                 type="monotone" 
@@ -261,9 +252,9 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
               />
             </LineChart>
           </ResponsiveContainer>
-        ) : (
-          <p className="text-subtle text-sm italic flex items-center justify-center h-60 bg-gray-50 rounded-3xl border border-dashed border-border">
-            No weight logs for this period.
+          ) : (
+            <p className="text-subtle text-sm italic flex items-center justify-center h-60 bg-gray-50 rounded-3xl border border-dashed border-border">
+            No weight logs for this period. Add a log or widen the range.
           </p>
         )
         ) : (
@@ -312,7 +303,7 @@ export default function WeightView({ userId, selectedDate, meals, foods }: Weigh
                       </div>
                     </td>
                     <td className="py-1.5 px-3 text-right font-mono text-[13px]">
-                      {row.calories ? (
+                      {row.calories !== null ? (
                         <span className="font-medium text-subtle/70">{row.calories} <span className="text-[10px] font-sans">kcal</span></span>
                       ) : (
                         <span className="text-gray-200">—</span>
