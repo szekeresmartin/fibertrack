@@ -485,7 +485,7 @@ export default function WeeklyPlannerView({ foods, user }: WeeklyPlannerViewProp
                     <button key={food.id} onClick={() => addItem(food)} className="w-full flex items-center justify-between p-4 rounded-2xl hover:bg-gray-50 transition-all border border-transparent hover:border-gray-100 active:scale-[0.98] group">
                       <div className="text-left">
                         <div className="font-black text-ink">{food.name_hu} {isConservativeVegetable(food) && <Leaf size={14} className="inline text-emerald-500 ml-1" />}</div>
-                        <div className="text-xs font-bold text-subtle uppercase tracking-wider mt-1">{Math.round(food.calories)} kcal • {Math.round(food.protein)}P {Math.round(food.carbs)}C {Math.round(food.fat)}F</div>
+                        <div className="text-xs font-bold text-subtle uppercase tracking-wider mt-1">{Math.round(food.calories)} kcal • {Math.round(food.protein)}P {Math.round(food.carbs)}C {Math.round(food.fat)}F • {Math.round(food.sugar ?? 0)}g sugar • {Math.round(food.saturated_fat ?? 0)}g sat fat</div>
                       </div>
                       <Plus size={20} className="text-subtle group-hover:text-accent group-hover:rotate-90 transition-all" />
                     </button>
@@ -552,6 +552,8 @@ function PlannedItemCard({ item, food, actualGrams, onRemove, onUpdateQuantity }
                <MacroTag label="P" val={Math.round(food.protein * factor)} color="bg-blue-50 text-blue-700" />
                <MacroTag label="C" val={Math.round(food.carbs * factor)} color="bg-purple-50 text-purple-700" />
                <MacroTag label="F" val={Math.round(food.fat * factor)} color="bg-pink-50 text-pink-700" />
+               <MacroTag label="S" val={Math.round((food.sugar ?? 0) * factor)} color="bg-pink-50 text-pink-700" />
+               <MacroTag label="SF" val={Math.round((food.saturated_fat ?? 0) * factor)} color="bg-slate-50 text-slate-700" />
                <div className="text-[10px] font-bold text-subtle/40 uppercase tracking-widest flex items-center">{Math.round(food.calories * factor)} kcal</div>
             </div>
           </div>

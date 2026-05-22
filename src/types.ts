@@ -6,9 +6,13 @@ export interface Food {
   carbs: number;
   protein: number;
   fat: number;
+  sugar?: number | null;
+  saturated_fat?: number | null;
   soluble_fiber: number;
   insoluble_fiber: number;
   total_fiber: number;
+  sugar_source?: string | null;
+  saturated_fat_source?: string | null;
   gi?: number;
   brand?: string;
   source: 'sheets' | 'local';
@@ -25,9 +29,15 @@ export interface MealItem {
   protein?: number;
   carbs?: number;
   fat?: number;
+  sugar?: number | null;
+  saturated_fat?: number | null;
   is_custom?: boolean;
   joinedFood?: Food | null;
   fiber?: number;
+  total_fiber?: number;
+  soluble_fiber?: number;
+  insoluble_fiber?: number;
+  gi?: number;
 }
 
 export interface Meal {
@@ -43,6 +53,8 @@ export interface DailyTotals {
   carbs: number;
   protein: number;
   fat: number;
+  sugar: number;
+  saturated_fat: number;
   soluble_fiber: number;
   insoluble_fiber: number;
   total_fiber: number;

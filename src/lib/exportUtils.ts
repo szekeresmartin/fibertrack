@@ -1,5 +1,5 @@
 import { Food, Meal } from '../types';
-import { calculateItemGL, getFoodOrUnknown, calculateMealTotals } from './utils';
+import { getFoodOrUnknown, calculateMealTotals } from './utils';
 import { format, parseISO } from 'date-fns';
 import { normalizeDateToLocal } from './dateUtils';
 
@@ -31,6 +31,8 @@ export const downloadDayAsCSV = (
     'protein',
     'carbs',
     'fat',
+    'sugar',
+    'saturated_fat',
     'fiber',
     'soluble_fiber',
     'insoluble_fiber',
@@ -51,11 +53,21 @@ export const downloadDayAsCSV = (
       const protein = isCustom ? (item.protein || 0) * factor : ((food?.protein || 0) * factor);
       const carbs = isCustom ? (item.carbs || 0) * factor : ((food?.carbs || 0) * factor);
       const fat = isCustom ? (item.fat || 0) * factor : ((food?.fat || 0) * factor);
-      const fiber = isCustom ? 0 : ((food?.total_fiber || 0) * factor);
-      const solubleFiber = isCustom ? 0 : (((food?.soluble_fiber || 0) * factor));
-      const insolubleFiber = isCustom ? 0 : (((food?.insoluble_fiber || 0) * factor));
-      const gl = (isCustom || !food) ? 0 : calculateItemGL(food, item.quantityGrams);
-      const gi = isCustom ? 0 : (food?.gi || 0);
+      const sugar = isCustom ? (item.sugar || 0) * factor : ((food?.sugar || 0) * factor);
+      const saturatedFat = isCustom ? (item.saturated_fat || 0) * factor : ((food?.saturated_fat || 0) * factor);
+      const fiber = isCustom
+        ? (((item.total_fiber ?? item.fiber ?? 0) * factor))
+        : ((food?.total_fiber || 0) * factor);
+      const solubleFiber = isCustom
+        ? (((item.soluble_fiber ?? 0) * factor))
+        : (((food?.soluble_fiber || 0) * factor));
+      const insolubleFiber = isCustom
+        ? (((item.insoluble_fiber ?? 0) * factor))
+        : (((food?.insoluble_fiber || 0) * factor));
+      const gl = isCustom
+        ? (((item.gi ?? 0) * (item.carbs || 0) * item.quantityGrams) / 10000)
+        : ((food ? (food.gi * food.carbs * item.quantityGrams) / 10000 : 0));
+      const gi = isCustom ? (item.gi || 0) : (food?.gi || 0);
       const itemName = isCustom ? (item.name || 'Custom') : (food?.name_hu || 'Unknown');
 
       const row = [
@@ -69,6 +81,8 @@ export const downloadDayAsCSV = (
         protein.toFixed(1),
         carbs.toFixed(1),
         fat.toFixed(1),
+        sugar.toFixed(1),
+        saturatedFat.toFixed(1),
         fiber.toFixed(1),
         solubleFiber.toFixed(1),
         insolubleFiber.toFixed(1),
@@ -132,13 +146,16 @@ export const generateDaySummaryText = (
     protein: acc.protein + m.totals.protein,
     carbs: acc.carbs + m.totals.carbs,
     fat: acc.fat + m.totals.fat,
+    sugar: acc.sugar + m.totals.sugar,
+    saturated_fat: acc.saturated_fat + m.totals.saturated_fat,
   }), { 
     fiber: 0, soluble_fiber: 0, insoluble_fiber: 0, 
-    gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0 
+    gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0, sugar: 0, saturated_fat: 0 
   });
 
   let text = `${dateStr}\n\n`;
   text += `Fiber: ${dailyTotals.fiber.toFixed(1)}g / 35g (sol: ${dailyTotals.soluble_fiber.toFixed(1)}g, insol: ${dailyTotals.insoluble_fiber.toFixed(1)}g)\n`;
+  text += `Sugar: ${dailyTotals.sugar.toFixed(1)}g | Saturated fat: ${dailyTotals.saturated_fat.toFixed(1)}g\n`;
   text += `GL: ${Math.round(dailyTotals.gl)}\n`;
   text += `Calories: ${Math.round(dailyTotals.calories)} kcal\n`;
   text += `Protein: ${dailyTotals.protein.toFixed(1)}g | Carbs: ${dailyTotals.carbs.toFixed(1)}g | Fat: ${dailyTotals.fat.toFixed(1)}g\n\n`;
@@ -215,13 +232,16 @@ export const generateRangeSummaryText = (
       protein: acc.protein + m.totals.protein,
       carbs: acc.carbs + m.totals.carbs,
       fat: acc.fat + m.totals.fat,
+      sugar: acc.sugar + m.totals.sugar,
+      saturated_fat: acc.saturated_fat + m.totals.saturated_fat,
     }), { 
       fiber: 0, soluble_fiber: 0, insoluble_fiber: 0, 
-      gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0 
+      gl: 0, calories: 0, protein: 0, carbs: 0, fat: 0, sugar: 0, saturated_fat: 0 
     });
 
     text += `${dateStr}\n\n`;
     text += `Fiber: ${dailyTotals.fiber.toFixed(1)}g / 35g (sol: ${dailyTotals.soluble_fiber.toFixed(1)}g, insol: ${dailyTotals.insoluble_fiber.toFixed(1)}g)\n`;
+    text += `Sugar: ${dailyTotals.sugar.toFixed(1)}g | Saturated fat: ${dailyTotals.saturated_fat.toFixed(1)}g\n`;
     text += `GL: ${Math.round(dailyTotals.gl)}\n`;
     text += `Calories: ${Math.round(dailyTotals.calories)} kcal\n`;
     text += `Protein: ${dailyTotals.protein.toFixed(1)}g | Carbs: ${dailyTotals.carbs.toFixed(1)}g | Fat: ${dailyTotals.fat.toFixed(1)}g\n\n`;

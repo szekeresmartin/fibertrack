@@ -25,7 +25,9 @@ export function useNutritionStats(meals: Meal[], foods: Food[], days: number) {
       mealDistData: stats.distributions,
       topFoodsData: stats.topSources.fiber.contribution,
       avgFiber: stats.aggregates.avgFiber,
-      avgGL: stats.aggregates.avgGL
+      avgGL: stats.aggregates.avgGL,
+      avgSugar: stats.aggregates.avgSugar,
+      avgSaturatedFat: stats.aggregates.avgSaturatedFat
     };
   }, [meals, foods, days]);
 }

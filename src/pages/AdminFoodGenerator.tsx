@@ -15,6 +15,7 @@ interface NutrientSources {
   calories?: FieldSource;
   protein?: FieldSource;
   fat?: FieldSource;
+  saturated_fat?: FieldSource;
   carbs?: FieldSource;
   total_fiber?: FieldSource;
   soluble_fiber?: FieldSource;
@@ -37,6 +38,7 @@ interface NutritionResult {
   calories: number | null;
   protein: number | null;
   fat: number | null;
+  saturated_fat: number | null;
   carbs: number | null;
   // Fiber
   total_fiber: number | null;
@@ -78,6 +80,7 @@ async function lookupCache(query: string): Promise<NutritionResult | null> {
     .select(`
       name_hu, name_en, brand,
       calories, protein, carbs, fat,
+      saturated_fat,
       total_fiber, soluble_fiber, insoluble_fiber, gi,
       sugar, sodium, cholesterol, calcium, iron, potassium, magnesium,
       category
@@ -95,6 +98,7 @@ async function lookupCache(query: string): Promise<NutritionResult | null> {
     calories: r1(data.calories),
     protein: r1(data.protein),
     fat: r1(data.fat),
+    saturated_fat: r1(data.saturated_fat),
     carbs: r1(data.carbs),
     total_fiber: r1(data.total_fiber),
     soluble_fiber: r1(data.soluble_fiber),
@@ -194,6 +198,7 @@ export default function AdminFoodGenerator() {
       calories: 0,
       protein: 0,
       fat: 0,
+      saturated_fat: 0,
       carbs: 0,
       total_fiber: 0,
       soluble_fiber: 0,
@@ -210,6 +215,7 @@ export default function AdminFoodGenerator() {
         calories: 'manual',
         protein: 'manual',
         fat: 'manual',
+        saturated_fat: 'manual',
         carbs: 'manual',
         total_fiber: 'manual',
         soluble_fiber: 'manual',
@@ -276,7 +282,7 @@ export default function AdminFoodGenerator() {
     // Verify all numeric values are >= 0
     const nutrients = [
       'calories', 'protein', 'carbs', 'fat', 'total_fiber', 
-      'soluble_fiber', 'insoluble_fiber', 'gi', 'sugar', 
+      'soluble_fiber', 'insoluble_fiber', 'gi', 'sugar', 'saturated_fat', 
       'sodium', 'cholesterol', 'calcium', 'iron', 'potassium', 'magnesium'
     ];
     for (const key of nutrients) {
@@ -301,6 +307,7 @@ export default function AdminFoodGenerator() {
       protein:         result.protein,
       carbs:           result.carbs,
       fat:             result.fat,
+      saturated_fat:   result.saturated_fat,
       total_fiber:     result.total_fiber,
       soluble_fiber:   result.soluble_fiber,
       insoluble_fiber: result.insoluble_fiber,
@@ -317,6 +324,7 @@ export default function AdminFoodGenerator() {
       protein_source:         src.protein         ?? null,
       carbs_source:           src.carbs           ?? null,
       fat_source:             src.fat             ?? null,
+      saturated_fat_source:   src.saturated_fat   ?? null,
       fiber_source:           src.total_fiber     ?? null,
       soluble_fiber_source:   src.soluble_fiber   ?? null,
       insoluble_fiber_source: src.insoluble_fiber ?? null,
@@ -462,6 +470,7 @@ export default function AdminFoodGenerator() {
               { key: 'protein', label: 'Protein', unit: 'g' },
               { key: 'carbs', label: 'Carbs', unit: 'g' },
               { key: 'fat', label: 'Fat', unit: 'g' },
+              { key: 'saturated_fat', label: 'Saturated fat', unit: 'g' },
               { key: 'total_fiber', label: 'Fiber (total)', unit: 'g' },
               { key: 'gi', label: 'Glycemic Index (GI)', unit: '' },
               { key: 'soluble_fiber', label: 'Soluble fiber', unit: 'g', ai: true },

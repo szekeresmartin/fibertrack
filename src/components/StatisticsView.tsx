@@ -1,16 +1,30 @@
-import React, { useMemo } from 'react';
-import { 
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
-  BarChart, Bar, Cell, PieChart, Pie, Legend, ReferenceLine
+import React, { useMemo, useState } from 'react';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
-import { format, addDays, subDays } from 'date-fns';
+import { format, subDays } from 'date-fns';
 import { Meal, Food } from '../types';
-import { cn, isConservativeVegetable } from '../lib/utils';
-import { Loader2, TrendingUp, Pizza, Award, Scale, Flame, Droplets, Wheat, CalendarDays, TriangleAlert } from 'lucide-react';
-import { useWeightStats } from '../lib/hooks/useWeightStats';
-import { useWeightChartData } from '../lib/hooks/useWeightChartData';
+import { cn } from '../lib/utils';
+import { Loader2, Scale, Flame, Droplets, Wheat, CalendarDays, Award } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 import { useWeightLogs } from '../lib/queries/weightQueries';
-import { computeStats } from '../lib/statsUtils';
+import {
+  computeStats,
+  getStatisticsPeriodRange,
+  type StatisticsPeriodId,
+} from '../lib/statsUtils';
+import { mapMealRecord } from '../lib/mealItemUtils';
+import { getFoodOrUnknown } from '../lib/utils';
 import { normalizeDateToLocal, parseLocalDateInput } from '../lib/dateUtils';
 
 interface StatisticsViewProps {
@@ -22,105 +36,297 @@ interface StatisticsViewProps {
   isLoading: boolean;
 }
 
+type StatsTab = 'overview' | 'fiber' | 'macros' | 'weight';
+type DailyChartMetric = 'fiber' | 'calories' | 'protein' | 'carbs' | 'fat' | 'sugar' | 'saturatedFat';
+type FiberRatio = { soluble: number; insoluble: number; unknown: number; isVisible: boolean };
+type MetricTone = 'orange' | 'green' | 'blue' | 'amber' | 'gray' | 'neutral';
+
+type FiberCompositionModel = {
+  total: number;
+  soluble: number;
+  insoluble: number;
+  unknown: number;
+  knownPercent: number | null;
+  isReliableSplit: boolean;
+};
+
+type TopFiberContributor = {
+  name: string;
+  grams: number;
+  fiber: number;
+  calories: number;
+  fiberPer100kcal: number | null;
+};
+
+const DAILY_CHART_OPTIONS: DailyChartMetric[] = ['fiber', 'calories', 'protein', 'carbs', 'fat', 'sugar', 'saturatedFat'];
+
+const DAILY_CHART_METRICS: Record<
+  DailyChartMetric,
+  {
+    label: string;
+    subtitle: string;
+    emptyState: string;
+    barFill: string;
+    formatter: (value: number) => string;
+  }
+> = {
+  fiber: {
+    label: 'Fiber',
+    subtitle: 'Daily total fiber by local calendar day',
+    emptyState: 'No fiber data for this period.',
+    barFill: '#22c55e',
+    formatter: formatDecimal,
+  },
+  calories: {
+    label: 'Calories',
+    subtitle: 'Daily calories by local calendar day',
+    emptyState: 'No calorie data for this period.',
+    barFill: '#f97316',
+    formatter: formatCalories,
+  },
+  protein: {
+    label: 'Protein',
+    subtitle: 'Daily protein by local calendar day',
+    emptyState: 'No protein data for this period.',
+    barFill: '#3b82f6',
+    formatter: formatDecimal,
+  },
+  carbs: {
+    label: 'Carbs',
+    subtitle: 'Daily carbs by local calendar day',
+    emptyState: 'No carb data for this period.',
+    barFill: '#f59e0b',
+    formatter: formatDecimal,
+  },
+  fat: {
+    label: 'Fat',
+    subtitle: 'Daily fat by local calendar day',
+    emptyState: 'No fat data for this period.',
+    barFill: '#6b7280',
+    formatter: formatDecimal,
+  },
+  sugar: {
+    label: 'Sugar',
+    subtitle: 'Daily sugar by local calendar day',
+    emptyState: 'No sugar data for this period.',
+    barFill: '#ec4899',
+    formatter: formatDecimal,
+  },
+  saturatedFat: {
+    label: 'Saturated fat',
+    subtitle: 'Daily saturated fat by local calendar day',
+    emptyState: 'No saturated fat data for this period.',
+    barFill: '#64748b',
+    formatter: formatDecimal,
+  },
+};
+
+const PERIOD_OPTIONS: { id: StatisticsPeriodId; label: string }[] = [
+  { id: 'this_week', label: 'This Week' },
+  { id: 'last_week', label: 'Last Week' },
+  { id: 'last_7_days', label: 'Last 7 Days' },
+  { id: 'last_30_days', label: 'Last 30 Days' },
+  { id: 'last_90_days', label: 'Last 90 Days' },
+  { id: 'all_time', label: 'All Time' },
+  { id: 'custom_range', label: 'Custom Range' },
+];
+
+const TABS: { id: StatsTab; label: string }[] = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'fiber', label: 'Fiber' },
+  { id: 'macros', label: 'Macros' },
+  { id: 'weight', label: 'Weight' },
+];
+
 export default function StatisticsView({ userId, meals, foods, days, setDays, isLoading }: StatisticsViewProps) {
-  const [activeTab, setActiveTab] = React.useState<'overview' | 'details'>('overview');
+  const [activeTab, setActiveTab] = useState<StatsTab>('overview');
+  const [dailyChartMetric, setDailyChartMetric] = useState<DailyChartMetric>('fiber');
+  const [selectedPeriod, setSelectedPeriod] = useState<StatisticsPeriodId>(() => mapDaysToPeriod(days));
+  const [customStart, setCustomStart] = useState(() => format(subDays(new Date(), 6), 'yyyy-MM-dd'));
+  const [customEnd, setCustomEnd] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [isTopFiberModalOpen, setIsTopFiberModalOpen] = useState(false);
+  const [allMeals, setAllMeals] = useState<Meal[]>(meals);
+  const [isStatsLoading, setIsStatsLoading] = useState(true);
   const { data: weightLogs = [] } = useWeightLogs(userId);
-  
-  const { weeklyTrend, trendDirection, hasSufficientData, windowLabel } = useWeightStats(weightLogs, meals, foods, days);
-  const weightChartData = useWeightChartData(weightLogs, days);
-  
-  const currentStartDate = useMemo(() => {
-    const now = new Date();
-    const spanDays = days === 3650 ? 3650 : days;
-    return subDays(now, spanDays - 1);
-  }, [days]);
 
-  const currentRange = useMemo(() => ({
-    start: normalizeDateToLocal(currentStartDate),
-    end: normalizeDateToLocal(new Date())
-  }), [currentStartDate]);
+  React.useEffect(() => {
+    let cancelled = false;
 
-  const previousRange = useMemo(() => {
-    if (days === 3650) return null;
-    const previousEnd = subDays(currentStartDate, 1);
-    const previousStart = subDays(previousEnd, days - 1);
-    return {
-      start: normalizeDateToLocal(previousStart),
-      end: normalizeDateToLocal(previousEnd)
+    async function fetchStatsMeals() {
+      setIsStatsLoading(true);
+
+      const { data, error } = await supabase
+        .from('meals')
+        .select(`
+          *,
+          meal_items (*)
+        `)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: true });
+
+      if (cancelled) return;
+
+      if (error) {
+        console.error('Error fetching statistics meals:', error);
+        setAllMeals(meals);
+      } else if (data) {
+        setAllMeals(data.map((meal: any) => mapMealRecord(meal)));
+      }
+
+      setIsStatsLoading(false);
+    }
+
+    fetchStatsMeals();
+
+    return () => {
+      cancelled = true;
     };
-  }, [currentStartDate, days]);
+  }, [userId]);
 
-  const currentMeals = useMemo(() => meals.filter(meal => {
-    const key = normalizeDateToLocal(meal.created_at);
-    if (!key) return false;
-    return key >= currentRange.start && key <= currentRange.end;
-  }), [meals, currentRange.start, currentRange.end]);
+  const selectedRange = useMemo(
+    () => getStatisticsPeriodRange(selectedPeriod, allMeals, { customStart, customEnd }),
+    [selectedPeriod, allMeals, customStart, customEnd]
+  );
 
-  const previousMeals = useMemo(() => {
-    if (!previousRange) return [];
-    return meals.filter(meal => {
-      const key = normalizeDateToLocal(meal.created_at);
-      if (!key) return false;
-      return key >= previousRange.start && key <= previousRange.end;
+  const periodMeals = useMemo(() => {
+    return allMeals.filter(meal => {
+      const dateKey = normalizeDateToLocal(meal.created_at);
+      if (!dateKey) return false;
+      return dateKey >= selectedRange.start && dateKey <= selectedRange.end;
     });
-  }, [meals, previousRange]);
+  }, [allMeals, selectedRange.start, selectedRange.end]);
 
-  const previousStats = useMemo(() => {
-    if (!previousRange || previousMeals.length === 0) return null;
-    return computeStats(previousMeals, foods, previousRange.start, previousRange.end);
-  }, [previousMeals, foods, previousRange]);
+  const stats = useMemo(() => {
+    return computeStats(periodMeals, foods, selectedRange.start, selectedRange.end);
+  }, [periodMeals, foods, selectedRange.start, selectedRange.end]);
 
-  const currentStats = useMemo(() => {
-    return computeStats(currentMeals, foods, currentRange.start, currentRange.end, previousStats?.aggregates);
-  }, [currentMeals, foods, currentRange, previousStats]);
+  const weightLogsInPeriod = useMemo(() => {
+    return weightLogs
+      .filter(log => {
+        const dateKey = normalizeDateToLocal(log.date);
+        if (!dateKey) return false;
+        return dateKey >= selectedRange.start && dateKey <= selectedRange.end;
+      })
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [weightLogs, selectedRange.start, selectedRange.end]);
 
-  const topFiberContributors = currentStats?.topSources.fiber.contribution ?? [];
-  const topMeals = currentStats?.distributions ?? [];
-  const lowFiberDays = useMemo(() => {
-    return (currentStats?.calendarDailyData ?? [])
-      .filter(day => day.hasMeals && day.metrics.fiber < 35)
-      .sort((a, b) => a.metrics.fiber - b.metrics.fiber)
-      .slice(0, 8)
-      .map(day => ({ date: day.date, metrics: { fiber: day.metrics.fiber, calories: day.metrics.calories } }));
-  }, [currentStats?.calendarDailyData]);
+  const dailyFiberData = useMemo(() => {
+    return stats.calendarDailyData.map(day => ({
+      date: day.date,
+      totalFiber: Number(day.metrics.fiber.toFixed(1)),
+      solubleFiber: Number(day.metrics.solubleFiber.toFixed(1)),
+      insolubleFiber: Number(day.metrics.insolubleFiber.toFixed(1)),
+      unknownFiber: Number(day.metrics.unknownFiber.toFixed(1)),
+      calories: Number(day.metrics.calories.toFixed(0)),
+      protein: Number(day.metrics.protein.toFixed(1)),
+      carbs: Number(day.metrics.carbs.toFixed(1)),
+      fat: Number(day.metrics.fat.toFixed(1)),
+      sugar: Number(day.metrics.sugar.toFixed(1)),
+      saturatedFat: Number(day.metrics.saturatedFat.toFixed(1)),
+      hasMeals: day.hasMeals,
+    }));
+  }, [stats.calendarDailyData]);
 
-  const missingDataDays = useMemo(() => {
-    return (currentStats?.calendarDailyData ?? [])
-      .filter(day => !day.hasMeals)
-      .slice(0, 8)
-      .map(day => ({ date: day.date }));
-  }, [currentStats?.calendarDailyData]);
+  const weightCaloriesData = useMemo(() => {
+    const weightByDate = new Map(
+      weightLogsInPeriod.map(log => [normalizeDateToLocal(log.date), Number(log.weight.toFixed(1))] as const)
+    );
 
-  const vegetableStats = useMemo(() => {
-    const statsMap: Record<string, { grams: number; count: number }> = {};
-    currentMeals.forEach(meal => {
+    return stats.calendarDailyData.map(day => {
+      const weight = weightByDate.get(day.date);
+
+      return {
+        date: day.date,
+        calories: Number(day.metrics.calories.toFixed(0)),
+        weight: weight ?? null,
+        hasMeals: day.hasMeals,
+      };
+    });
+  }, [stats.calendarDailyData, weightLogsInPeriod]);
+
+  const weightCaloriesObservationCount = useMemo(() => {
+    return weightCaloriesData.filter(point => point.weight !== null && point.hasMeals).length;
+  }, [weightCaloriesData]);
+
+  const macroDailyData = useMemo(() => {
+    return stats.calendarDailyData.map(day => ({
+      date: day.date,
+      calories: Number(day.metrics.calories.toFixed(0)),
+      protein: Number(day.metrics.protein.toFixed(1)),
+      carbs: Number(day.metrics.carbs.toFixed(1)),
+      fat: Number(day.metrics.fat.toFixed(1)),
+      sugar: Number(day.metrics.sugar.toFixed(1)),
+      saturatedFat: Number(day.metrics.saturatedFat.toFixed(1)),
+      fiber: Number(day.metrics.fiber.toFixed(1)),
+      hasMeals: day.hasMeals,
+    }));
+  }, [stats.calendarDailyData]);
+
+  const topFiberContributors = useMemo(() => {
+    const contributors = new Map<string, TopFiberContributor & { count: number }>();
+
+    periodMeals.forEach(meal => {
       (meal.items || []).forEach(item => {
-        const food = foods.find(f => f.id === item.foodId);
-        if (!food || !isConservativeVegetable(food)) return;
-        const name = food.name_hu || 'Unknown';
-        if (!statsMap[name]) statsMap[name] = { grams: 0, count: 0 };
-        statsMap[name].grams += item.quantityGrams;
-        statsMap[name].count += 1;
+        const factor = item.quantityGrams / 100;
+        const isCustom = !!item.is_custom;
+        const food = !isCustom && item.foodId ? getFoodOrUnknown(foods, item.foodId) : null;
+
+        if (!isCustom && (!food || food.id === 'unknown')) {
+          return;
+        }
+
+        const name = isCustom
+          ? (item.name || 'Manual item')
+          : (food?.name_hu || food?.name_en || 'Unknown');
+        const key = isCustom
+          ? `custom:${name}:${item.calories ?? 0}:${item.protein ?? 0}:${item.carbs ?? 0}:${item.fat ?? 0}:${item.sugar ?? 0}:${item.saturated_fat ?? 0}:${item.total_fiber ?? item.fiber ?? 0}:${item.soluble_fiber ?? 0}:${item.insoluble_fiber ?? 0}:${item.gi ?? 'n/a'}`
+          : `food:${food?.id}`;
+        const current = contributors.get(key) ?? {
+          name,
+          grams: 0,
+          fiber: 0,
+          calories: 0,
+          fiberPer100kcal: null,
+          count: 0,
+        };
+
+        const itemFiber = isCustom
+          ? ((item.total_fiber ?? item.fiber ?? 0) * factor)
+          : ((food?.total_fiber ?? 0) * factor);
+        const itemCalories = isCustom
+          ? ((item.calories ?? 0) * factor)
+          : ((food?.calories ?? 0) * factor);
+
+        current.grams += item.quantityGrams;
+        current.fiber += itemFiber;
+        current.calories += itemCalories;
+        current.count += 1;
+        contributors.set(key, current);
       });
     });
-    return Object.entries(statsMap)
-      .map(([name, value]) => ({ name, grams: Number(value.grams.toFixed(1)), count: value.count }))
-      .sort((a, b) => b.grams - a.grams)
-      .slice(0, 8);
-  }, [currentMeals, foods]);
 
-  const periodComparison = currentStats?.aggregates.comparisons ?? null;
-  const hasComparison = !!previousStats && !!periodComparison;
-  const chartDailyData = useMemo(() => {
-    if (!currentStats) return [];
-    return currentStats.dailyData.map(day => ({
-      ...day,
-      fiber: day.metrics.fiber,
-      gl: day.metrics.gl
-    }));
-  }, [currentStats]);
+    return Array.from(contributors.values())
+      .map(({ count: _count, ...item }) => ({
+        ...item,
+        grams: Number(item.grams.toFixed(0)),
+        fiber: Number(item.fiber.toFixed(1)),
+        calories: Math.round(item.calories),
+        fiberPer100kcal: item.calories > 0 ? Number(((item.fiber / item.calories) * 100).toFixed(1)) : null,
+      }))
+      .filter(item => item.fiber > 0)
+      .sort((a, b) => b.fiber - a.fiber)
+      .slice(0, 20);
+  }, [foods, periodMeals]);
 
-  if (isLoading) {
+  const hasWeightData = weightCaloriesObservationCount >= 2;
+  const weightChange = hasWeightData
+    ? weightLogsInPeriod[weightLogsInPeriod.length - 1].weight - weightLogsInPeriod[0].weight
+    : null;
+  const fiberComposition = buildFiberCompositionModel(stats.aggregates.fiberRatio);
+  const hasFiberSplitDailyData = stats.aggregates.fiberRatio?.isVisible ?? false;
+  const topFiberContributorsPreview = topFiberContributors.slice(0, 5);
+
+  if (isLoading || isStatsLoading) {
     return (
       <div className="flex flex-col items-center justify-center h-96">
         <Loader2 className="animate-spin text-accent mb-4" size={48} />
@@ -129,307 +335,935 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
     );
   }
 
-  const fiberChartTitle = currentStats.grouping === 'daily'
-    ? 'Daily Fiber Trend'
-    : currentStats.grouping === 'weekly'
-      ? 'Weekly Fiber Trend'
-      : 'Monthly Fiber Trend';
-  const fiberRatio = currentStats.aggregates.fiberRatio;
-
-  const rangeLabel = days === 7 ? 'This Week' : days === 30 ? 'Last 30 Days' : 'All Time';
-  const weightWindowLabel = windowLabel;
+  const selectedLabel = selectedRange.label;
 
   return (
     <div className="space-y-8 pb-20 animate-in fade-in duration-500">
       <div className="flex flex-col gap-4">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div>
             <h2 className="text-3xl font-[800] tracking-tight">Statistics</h2>
-            <p className="text-subtle text-sm">{rangeLabel} nutritional insights</p>
+            <p className="text-subtle text-sm">
+              {selectedLabel} analytics from {selectedRange.start} to {selectedRange.end}
+            </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="bg-gray-100/50 p-1 rounded-2xl flex gap-1">
-              <button onClick={() => setActiveTab('overview')} className={cn("px-5 py-2 rounded-xl text-sm font-bold transition-all", activeTab === 'overview' ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink")}>Overview</button>
-              <button onClick={() => setActiveTab('details')} className={cn("px-5 py-2 rounded-xl text-sm font-bold transition-all", activeTab === 'details' ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink")}>Details</button>
+          <div className="space-y-3 xl:max-w-4xl">
+            <div className="flex flex-wrap gap-2 rounded-[1.25rem] border border-border bg-white p-2 shadow-sm">
+              {PERIOD_OPTIONS.map(option => (
+                <button
+                  key={option.id}
+                  onClick={() => handlePeriodChange(option.id, setSelectedPeriod, setDays)}
+                  className={cn(
+                    'rounded-xl px-4 py-2 text-sm font-bold transition-all',
+                    selectedPeriod === option.id
+                      ? 'bg-ink text-white shadow-sm'
+                      : 'bg-gray-50 text-subtle hover:text-ink hover:bg-gray-100'
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
-            <div className="bg-gray-100/50 p-1 rounded-2xl flex gap-1">
-              <button onClick={() => setDays(7)} className={cn("px-4 py-2 rounded-xl text-sm font-bold transition-all", days === 7 ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink")}>This Week</button>
-              <button onClick={() => setDays(30)} className={cn("px-4 py-2 rounded-xl text-sm font-bold transition-all", days === 30 ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink")}>Last 30 Days</button>
-              <button onClick={() => setDays(3650)} className={cn("px-4 py-2 rounded-xl text-sm font-bold transition-all", days === 3650 ? "bg-white text-ink shadow-sm scale-105" : "text-subtle hover:text-ink")}>All Time</button>
-            </div>
+
+            {selectedPeriod === 'custom_range' && (
+              <div className="grid grid-cols-1 gap-3 rounded-[1.25rem] border border-border bg-white p-4 shadow-sm sm:grid-cols-2">
+                <DateField
+                  label="Start date"
+                  value={customStart}
+                  onChange={setCustomStart}
+                />
+                <DateField
+                  label="End date"
+                  value={customEnd}
+                  onChange={setCustomEnd}
+                />
+              </div>
+            )}
           </div>
         </div>
 
-        {hasComparison && periodComparison && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <ComparisonChip label="Fiber" delta={periodComparison.fiberDelta} percent={periodComparison.fiberPercent} positiveIsGood />
-            <ComparisonChip label="GL" delta={periodComparison.glDelta} percent={periodComparison.glPercent} positiveIsGood={false} />
-            <ComparisonChip label="Calories" delta={periodComparison.caloriesDelta} percent={periodComparison.caloriesPercent} positiveIsGood={false} />
-          </div>
-        )}
-        {!hasComparison && days !== 3650 && (
-          <div className="rounded-2xl border border-dashed border-border bg-gray-50 px-4 py-3 text-sm text-subtle">
-            Comparison unavailable because the previous period has no logged meals.
-          </div>
-        )}
+        <div className="flex flex-wrap gap-2 rounded-[1.25rem] border border-border bg-white p-2 shadow-sm">
+          {TABS.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                'rounded-xl px-4 py-2 text-sm font-bold transition-all',
+                activeTab === tab.id
+                  ? 'bg-accent text-white shadow-sm'
+                  : 'bg-gray-50 text-subtle hover:text-ink hover:bg-gray-100'
+              )}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {activeTab === 'overview' ? (
-        <div className="space-y-8">
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
-            <StatSummaryCard label="Avg Fiber / day" value={currentStats.aggregates.avgFiber.toFixed(1)} unit="g" icon={<Flame size={20} />} color="bg-green-50 text-green-600" />
-            <StatSummaryCard label="Avg Calories / day" value={Math.round(currentStats.aggregates.avgCalories).toString()} unit="kcal" icon={<Flame size={20} />} color="bg-orange-50 text-orange-600" />
-            <StatSummaryCard label="Avg Protein / day" value={currentStats.aggregates.avgProtein.toFixed(1)} unit="g" icon={<Award size={20} />} color="bg-blue-50 text-blue-600" />
-            <StatSummaryCard label="Avg GL / day" value={currentStats.aggregates.avgGL.toFixed(1)} unit="" icon={<Award size={20} />} color="bg-amber-50 text-amber-600" />
-            <StatSummaryCard label="Fiber Goal" value={`${currentStats.aggregates.consistencyScore}%`} unit="days hit" icon={<CalendarDays size={20} />} color="bg-emerald-50 text-emerald-700" />
-            <StatSummaryCard label={`Weight Trend (${weightWindowLabel})`} value={!hasSufficientData ? 'Insufficient' : Math.abs(weeklyTrend).toFixed(2)} unit={!hasSufficientData ? '' : `kg/wk ${trendDirection === 'up' ? '↑' : trendDirection === 'down' ? '↓' : '→'}`} icon={<Scale size={20} />} color={cn("bg-gray-50 text-gray-600", trendDirection === 'down' && hasSufficientData && "bg-green-50 text-green-600", trendDirection === 'up' && hasSufficientData && "bg-red-50 text-red-600")} />
+      {activeTab === 'overview' && (
+        <section className="space-y-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <MetricCard label="Avg calories" value={Math.round(stats.aggregates.avgCalories).toString()} unit="kcal" icon={<Flame size={20} />} tone="orange" />
+            <MetricCard label="Avg total fiber" value={formatDecimal(stats.aggregates.avgFiber)} unit="g" icon={<Wheat size={20} />} tone="green" />
+            <MetricCard label="Avg soluble fiber" value={formatDecimal(stats.aggregates.avgSolubleFiber)} unit="g" icon={<Droplets size={20} />} tone="blue" />
+            <MetricCard label="Avg insoluble fiber" value={formatDecimal(stats.aggregates.avgInsolubleFiber)} unit="g" icon={<Wheat size={20} />} tone="amber" />
+            <MetricCard label="Avg protein" value={formatDecimal(stats.aggregates.avgProtein)} unit="g" icon={<Award size={20} />} tone="blue" />
+            <MetricCard label="Avg carbs" value={formatDecimal(stats.aggregates.avgCarbs)} unit="g" icon={<Wheat size={20} />} tone="orange" />
+            <MetricCard label="Avg fat" value={formatDecimal(stats.aggregates.avgFat)} unit="g" icon={<Flame size={20} />} tone="gray" />
+            <MetricCard label="Avg sugar" value={formatDecimal(stats.aggregates.avgSugar)} unit="g" icon={<Award size={20} />} tone="neutral" />
+            <MetricCard label="Avg saturated fat" value={formatDecimal(stats.aggregates.avgSaturatedFat)} unit="g" icon={<Flame size={20} />} tone="neutral" />
           </div>
 
-          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-            <ChartContainer title={fiberChartTitle} subtitle="Fiber intake with 35g goal line">
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={chartDailyData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
-                  <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} dy={10} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
-                  <Tooltip contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} cursor={{ stroke: '#10b981', strokeWidth: 2 }} />
-                  <ReferenceLine y={35} stroke="#10b981" strokeDasharray="4 4" />
-                  <Line type="monotone" dataKey="fiber" stroke="#10b981" strokeWidth={4} dot={{ r: 4, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6, strokeWidth: 0 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartContainer>
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+            <DailyChartPanel
+              data={dailyFiberData}
+              selectedMetric={dailyChartMetric}
+              onMetricChange={setDailyChartMetric}
+              hasFiberSplitData={hasFiberSplitDailyData}
+            />
 
-            <ChartContainer title="Fiber Quality" subtitle="Soluble versus insoluble fiber">
-              <div className="space-y-4">
-                {fiberRatio?.isVisible ? (
-                  <>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="rounded-2xl bg-blue-50 p-4 border border-blue-100">
-                        <div className="text-[10px] font-black uppercase tracking-widest text-blue-700">Soluble</div>
-                        <div className="text-2xl font-black text-blue-600">{fiberRatio.soluble.toFixed(1)}g</div>
-                      </div>
-                      <div className="rounded-2xl bg-orange-50 p-4 border border-orange-100">
-                        <div className="text-[10px] font-black uppercase tracking-widest text-orange-700">Insoluble</div>
-                        <div className="text-2xl font-black text-orange-600">{fiberRatio.insoluble.toFixed(1)}g</div>
-                      </div>
-                    </div>
-                    <div className="h-3 rounded-full overflow-hidden bg-gray-100">
-                      <div className="h-full bg-blue-500" style={{ width: `${fiberRatio.soluble + fiberRatio.insoluble > 0 ? (fiberRatio.soluble / (fiberRatio.soluble + fiberRatio.insoluble)) * 100 : 0}%` }} />
-                    </div>
-                    <p className="text-xs text-subtle">Based on foods with explicit soluble/insoluble fiber data.</p>
-                  </>
-                ) : (
-                  <div className="flex items-start gap-3 rounded-2xl bg-amber-50 border border-amber-100 p-4">
-                    <TriangleAlert size={18} className="text-amber-600 mt-0.5 shrink-0" />
-                    <p className="text-sm text-amber-900">Fiber split unavailable for some foods in this range, so the ratio is hidden instead of estimated.</p>
-                  </div>
-                )}
+            <FiberCompositionPanel composition={fiberComposition} />
+          </div>
+
+          <Panel
+            title="Top fiber contributors"
+            subtitle="Logged meal items ranked by total fiber contribution"
+            actions={
+              topFiberContributors.length > topFiberContributorsPreview.length ? (
+                <button
+                  type="button"
+                  onClick={() => setIsTopFiberModalOpen(true)}
+                  className="rounded-xl bg-gray-50 px-3 py-2 text-xs font-bold text-subtle transition-all hover:bg-gray-100 hover:text-ink"
+                >
+                  View all
+                </button>
+              ) : null
+            }
+          >
+            {topFiberContributorsPreview.length > 0 ? (
+              <div className="overflow-hidden rounded-3xl border border-border">
+                <table className="min-w-full divide-y divide-border">
+                  <thead className="bg-gray-50">
+                    <tr className="text-left text-[10px] font-black uppercase tracking-widest text-subtle">
+                      <th className="px-4 py-3">Food</th>
+                      <th className="px-4 py-3 text-right">Consumed grams</th>
+                      <th className="px-4 py-3 text-right">Fiber</th>
+                      <th className="px-4 py-3 text-right">Calories</th>
+                      <th className="px-4 py-3 text-right">Fiber / 100 kcal</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border bg-white">
+                    {topFiberContributorsPreview.map((item, index) => (
+                      <tr key={`${item.name}-${index}`} className="text-sm">
+                        <td className="px-4 py-3 font-semibold text-ink">{item.name}</td>
+                        <td className="px-4 py-3 text-right font-mono text-subtle">{Math.round(item.grams)} g</td>
+                        <td className="px-4 py-3 text-right font-mono text-subtle">{formatDecimal(item.fiber)} g</td>
+                        <td className="px-4 py-3 text-right font-mono text-subtle">{item.calories} kcal</td>
+                        <td className="px-4 py-3 text-right font-mono text-subtle">
+                          {item.fiberPer100kcal === null ? '—' : `${formatDecimal(item.fiberPer100kcal)} g`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            </ChartContainer>
+            ) : (
+              <EmptyState text="No fiber contributors in this period." />
+            )}
+          </Panel>
 
-            <ChartContainer title="Top Fiber Contributors" subtitle="Foods contributing the most fiber">
-              {topFiberContributors.length > 0 ? (
-                <div className="space-y-4">
-                  {topFiberContributors.slice(0, 5).map((item, index) => (
-                    <div key={item.name} className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-green-50 flex items-center justify-center text-xs font-black text-green-700">{index + 1}</div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex justify-between gap-3 mb-1">
-                          <span className="text-sm font-bold truncate">{item.name}</span>
-                          <span className="text-xs font-mono text-subtle">{item.value.toFixed(1)}g</span>
-                        </div>
-                        <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-green-500 rounded-full" style={{ width: `${(item.value / (topFiberContributors[0]?.value || 1)) * 100}%` }} />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+          <Panel title="Macro overview" subtitle="Daily calorie and macro trends plus logged-day averages for the selected period">
+            <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+              <Panel title="Daily calories" subtitle="Local calendar-day totals">
+                {macroDailyData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <LineChart data={macroDailyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                      <XAxis
+                        dataKey="date"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 12, fill: '#94a3b8' }}
+                        tickFormatter={formatShortDate}
+                        dy={10}
+                      />
+                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
+                      <Tooltip
+                        contentStyle={tooltipStyle}
+                        formatter={(value: number) => [formatCalories(Number(value)), 'Calories']}
+                        labelFormatter={(label) => formatLongDate(String(label))}
+                      />
+                      <Line type="monotone" dataKey="calories" stroke="#f97316" strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <EmptyState text="No calorie data for this period." />
+                )}
+              </Panel>
+
+            <Panel title="Daily macro distribution" subtitle="Protein, carbs, fat, sugar, and saturated fat by day">
+              {macroDailyData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={macroDailyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                      <XAxis
+                        dataKey="date"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fontSize: 12, fill: '#94a3b8' }}
+                        tickFormatter={formatShortDate}
+                        dy={10}
+                      />
+                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
+                      <Tooltip
+                        contentStyle={tooltipStyle}
+                        formatter={(value: number, name) => [formatDecimal(Number(value)), mealSeriesLabel(String(name))]}
+                        labelFormatter={(label) => formatLongDate(String(label))}
+                      />
+                    <Legend />
+                    <Bar dataKey="protein" stackId="macros" fill="#3b82f6" name="Protein" />
+                    <Bar dataKey="carbs" stackId="macros" fill="#f59e0b" name="Carbs" />
+                    <Bar dataKey="fat" stackId="macros" fill="#6b7280" name="Fat" />
+                    <Bar dataKey="sugar" stackId="macros" fill="#ec4899" name="Sugar" />
+                    <Bar dataKey="saturatedFat" stackId="macros" fill="#64748b" name="Saturated fat" />
+                  </BarChart>
+                </ResponsiveContainer>
               ) : (
-                <EmptyState text="No fiber contributors in this period." />
+                <EmptyState text="No macro data for this period." />
               )}
-            </ChartContainer>
+            </Panel>
           </div>
 
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            <ChartContainer title="Low-Fiber Days" subtitle="Days below the 35g goal">
-              {lowFiberDays.length > 0 ? (
-                <div className="space-y-3">
-                  {lowFiberDays.map(day => (
-                    <div key={day.date}>
-                      <InsightRow label={format(parseLocalDateInput(day.date) || new Date(), 'MMM d, yyyy')} value={`${day.metrics.fiber.toFixed(1)}g fiber`} tone="amber" />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState text="No low-fiber days in the selected range." />
-              )}
-            </ChartContainer>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 mt-6">
+              <PillMetric label="Avg calories / logged day" value={formatCalories(stats.aggregates.avgCalories)} tone="orange" />
+              <PillMetric label="Avg protein / logged day" value={`${formatDecimal(stats.aggregates.avgProtein)} g`} tone="blue" />
+              <PillMetric label="Avg carbs / logged day" value={`${formatDecimal(stats.aggregates.avgCarbs)} g`} tone="amber" />
+              <PillMetric label="Avg fat / logged day" value={`${formatDecimal(stats.aggregates.avgFat)} g`} tone="gray" />
+              <PillMetric label="Avg sugar / logged day" value={`${formatDecimal(stats.aggregates.avgSugar)} g`} tone="gray" />
+              <PillMetric label="Avg saturated fat / logged day" value={`${formatDecimal(stats.aggregates.avgSaturatedFat)} g`} tone="gray" />
+            </div>
+          </Panel>
 
-            <ChartContainer title="Missing Data" subtitle="Days with no meals logged">
-              {missingDataDays.length > 0 ? (
-                <div className="space-y-3">
-                  {missingDataDays.map(day => (
-                    <div key={day.date}>
-                      <InsightRow label={format(parseLocalDateInput(day.date) || new Date(), 'MMM d, yyyy')} value="No meals logged" tone="gray" />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState text="No completely empty days in this range." />
-              )}
-            </ChartContainer>
+          {hasWeightData ? (
+            <Panel title="Weight vs calories" subtitle="Daily calories and weight plotted by local date">
+              <ResponsiveContainer width="100%" height={340}>
+                <ComposedChart data={weightCaloriesData} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis
+                    dataKey="date"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 12, fill: '#94a3b8' }}
+                    tickFormatter={formatShortDate}
+                    dy={10}
+                  />
+                  <YAxis
+                    yAxisId="left"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 12, fill: '#94a3b8' }}
+                    tickFormatter={(value) => formatCalories(Number(value))}
+                    label={{ value: 'Calories', angle: -90, position: 'insideLeft', dx: 10 }}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 12, fill: '#94a3b8' }}
+                    tickFormatter={(value) => `${Number(value).toFixed(1)} kg`}
+                    label={{ value: 'Weight', angle: 90, position: 'insideRight', dx: -10 }}
+                  />
+                  <Tooltip content={<WeightCaloriesTooltip />} />
+                  <Bar yAxisId="left" dataKey="calories" fill="#f97316" name="Calories" radius={[8, 8, 0, 0]} />
+                  <Line
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey="weight"
+                    name="Weight"
+                    stroke="#8b5cf6"
+                    strokeWidth={3}
+                    dot={{ r: 3 }}
+                    activeDot={{ r: 5 }}
+                    connectNulls={false}
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </Panel>
+          ) : (
+            <div className="rounded-[1.5rem] border border-dashed border-border bg-white p-6 text-sm text-subtle shadow-sm">
+              Not enough same-period calories and weight observations to build the combined chart. At least two days with both metrics are needed.
+            </div>
+          )}
+        </section>
+      )}
+
+      {activeTab === 'fiber' && (
+        <section className="space-y-6">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+            <DailyChartPanel
+              data={dailyFiberData}
+              selectedMetric={dailyChartMetric}
+              onMetricChange={setDailyChartMetric}
+              hasFiberSplitData={hasFiberSplitDailyData}
+            />
+
+            <FiberCompositionPanel composition={fiberComposition} />
           </div>
+        </section>
+      )}
 
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            <ChartContainer title="Weight Progress" subtitle="Body weight and 7-day moving average">
-              {weightChartData.length > 0 ? (
+      {activeTab === 'macros' && (
+        <section className="space-y-6">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+            <Panel title="Daily calories" subtitle="Local calendar-day totals">
+              {macroDailyData.length > 0 ? (
                 <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={weightChartData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
-                    <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} tickFormatter={(val) => format(parseLocalDateInput(val) || new Date(), 'MMM d')} dy={10} />
-                    <YAxis axisLine={false} tickLine={false} domain={['dataMin - 1', 'dataMax + 1']} tick={{ fontSize: 12, fill: '#94a3b8' }} tickFormatter={(val) => Number(val).toFixed(1)} />
-                    <Tooltip contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} cursor={{ stroke: '#8b5cf6', strokeWidth: 2 }} labelFormatter={(val) => format(parseLocalDateInput(val) || new Date(), 'MMMM d, yyyy')} />
-                    <Line type="monotone" dataKey="weight" stroke="#8b5cf6" strokeWidth={2} strokeOpacity={0.3} dot={{ r: 3, fill: '#8b5cf6', strokeWidth: 1, stroke: '#fff', fillOpacity: 0.5 }} activeDot={{ r: 4, strokeWidth: 0 }} name="Weight" />
-                    <Line type="monotone" dataKey="movingAverage" stroke="#8b5cf6" strokeWidth={4} dot={false} activeDot={{ r: 6, strokeWidth: 0 }} name="7-Day Avg" connectNulls />
+                  <LineChart data={macroDailyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis
+                      dataKey="date"
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fontSize: 12, fill: '#94a3b8' }}
+                      tickFormatter={formatShortDate}
+                      dy={10}
+                    />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
+                    <Tooltip
+                      contentStyle={tooltipStyle}
+                      formatter={(value: number) => [formatCalories(Number(value)), 'Calories']}
+                      labelFormatter={(label) => formatLongDate(String(label))}
+                    />
+                    <Line type="monotone" dataKey="calories" stroke="#f97316" strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 5 }} />
                   </LineChart>
                 </ResponsiveContainer>
               ) : (
-                <EmptyState text="Log at least 3 weight entries to see a trend." />
+                <EmptyState text="No calorie data for this period." />
               )}
-            </ChartContainer>
+            </Panel>
 
-            <ChartContainer title="Fiber by Meal" subtitle="Meals contributing the most fiber">
-              {topMeals.length > 0 ? (
-                <div className="space-y-4">
-                  {topMeals.slice(0, 5).map((meal, index) => (
-                    <div key={meal.name}>
-                      <InsightRow label={`${index + 1}. ${meal.name}`} value={`${meal.fiber.toFixed(1)}g`} tone="green" />
-                    </div>
-                  ))}
-                </div>
+            <Panel title="Daily macro distribution" subtitle="Protein, carbs, fat, sugar, and saturated fat by day">
+              {macroDailyData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={macroDailyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis
+                      dataKey="date"
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fontSize: 12, fill: '#94a3b8' }}
+                      tickFormatter={formatShortDate}
+                      dy={10}
+                    />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
+                    <Tooltip
+                      contentStyle={tooltipStyle}
+                      formatter={(value: number, name) => [formatDecimal(Number(value)), mealSeriesLabel(String(name))]}
+                      labelFormatter={(label) => formatLongDate(String(label))}
+                    />
+                    <Legend />
+                    <Bar dataKey="protein" stackId="macros" fill="#3b82f6" name="Protein" />
+                    <Bar dataKey="carbs" stackId="macros" fill="#f59e0b" name="Carbs" />
+                    <Bar dataKey="fat" stackId="macros" fill="#6b7280" name="Fat" />
+                    <Bar dataKey="sugar" stackId="macros" fill="#ec4899" name="Sugar" />
+                    <Bar dataKey="saturatedFat" stackId="macros" fill="#64748b" name="Saturated fat" />
+                  </BarChart>
+                </ResponsiveContainer>
               ) : (
-                <EmptyState text="No meal-level fiber data in this range." />
+                <EmptyState text="No macro data for this period." />
               )}
-            </ChartContainer>
+            </Panel>
+          </div>
+
+          <Panel title="Period macro summary" subtitle="Totals for the selected period">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              <PillMetric label="Avg calories / logged day" value={formatCalories(stats.aggregates.avgCalories)} tone="orange" />
+              <PillMetric label="Avg protein / logged day" value={`${formatDecimal(stats.aggregates.avgProtein)} g`} tone="blue" />
+              <PillMetric label="Avg carbs / logged day" value={`${formatDecimal(stats.aggregates.avgCarbs)} g`} tone="amber" />
+              <PillMetric label="Avg fat / logged day" value={`${formatDecimal(stats.aggregates.avgFat)} g`} tone="gray" />
+              <PillMetric label="Avg sugar / logged day" value={`${formatDecimal(stats.aggregates.avgSugar)} g`} tone="gray" />
+              <PillMetric label="Avg saturated fat / logged day" value={`${formatDecimal(stats.aggregates.avgSaturatedFat)} g`} tone="gray" />
+            </div>
+          </Panel>
+        </section>
+      )}
+
+      {activeTab === 'weight' && (
+        <section className="space-y-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <MetricCard label="Weight entries in period" value={weightLogsInPeriod.length.toString()} unit="" icon={<Scale size={20} />} tone="neutral" />
+            <MetricCard label="Nutrition logged days" value={stats.aggregates.loggedDays.toString()} unit="" icon={<CalendarDays size={20} />} tone="green" />
+            <MetricCard label="Avg calories / logged day" value={Math.round(stats.aggregates.avgCalories).toString()} unit="kcal" icon={<Flame size={20} />} tone="orange" />
+            <MetricCard label="Avg fiber / logged day" value={formatDecimal(stats.aggregates.avgFiber)} unit="g" icon={<Wheat size={20} />} tone="green" />
+            <MetricCard
+              label="Weight change"
+              value={weightChange === null ? '—' : `${weightChange > 0 ? '+' : ''}${weightChange.toFixed(1)}`}
+              unit={weightChange === null ? '' : 'kg'}
+              icon={<Scale size={20} />}
+              tone={weightChange === null ? 'neutral' : weightChange > 0 ? 'orange' : 'green'}
+            />
+          </div>
+
+          {!hasWeightData ? (
+            <div className="rounded-[1.5rem] border border-dashed border-border bg-white p-6 text-sm text-subtle shadow-sm">
+              Not enough same-period calories and weight observations to build the combined chart. At least two days with both metrics are needed.
+            </div>
+          ) : (
+            <Panel title="Weight vs calories" subtitle="Daily calories and weight plotted by local date">
+              <ResponsiveContainer width="100%" height={340}>
+                <ComposedChart data={weightCaloriesData} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis
+                    dataKey="date"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 12, fill: '#94a3b8' }}
+                    tickFormatter={formatShortDate}
+                    dy={10}
+                  />
+                  <YAxis
+                    yAxisId="left"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 12, fill: '#94a3b8' }}
+                    tickFormatter={(value) => formatCalories(Number(value))}
+                    label={{ value: 'Calories', angle: -90, position: 'insideLeft', dx: 10 }}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    axisLine={false}
+                    tickLine={false}
+                    tick={{ fontSize: 12, fill: '#94a3b8' }}
+                    tickFormatter={(value) => `${Number(value).toFixed(1)} kg`}
+                    label={{ value: 'Weight', angle: 90, position: 'insideRight', dx: -10 }}
+                  />
+                  <Tooltip content={<WeightCaloriesTooltip />} />
+                  <Bar yAxisId="left" dataKey="calories" fill="#f97316" name="Calories" radius={[8, 8, 0, 0]} />
+                  <Line
+                    yAxisId="right"
+                    type="monotone"
+                    dataKey="weight"
+                    name="Weight"
+                    stroke="#8b5cf6"
+                    strokeWidth={3}
+                    dot={{ r: 3 }}
+                    activeDot={{ r: 5 }}
+                    connectNulls={false}
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </Panel>
+          )}
+        </section>
+      )}
+
+      {isTopFiberModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-4xl rounded-[2rem] border border-border bg-white p-6 shadow-2xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-2xl font-[800] tracking-tight">All fiber contributors</h3>
+                <p className="text-xs font-medium text-subtle">All logged meal items in the selected period</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsTopFiberModalOpen(false)}
+                className="rounded-xl bg-gray-50 px-3 py-2 text-xs font-bold text-subtle transition-all hover:bg-gray-100 hover:text-ink"
+              >
+                Close
+              </button>
+            </div>
+
+            {topFiberContributors.length > 0 ? (
+              <div className="overflow-auto rounded-3xl border border-border">
+                <table className="min-w-full divide-y divide-border">
+                  <thead className="sticky top-0 bg-gray-50">
+                    <tr className="text-left text-[10px] font-black uppercase tracking-widest text-subtle">
+                      <th className="px-4 py-3">Food</th>
+                      <th className="px-4 py-3 text-right">Consumed grams</th>
+                      <th className="px-4 py-3 text-right">Fiber</th>
+                      <th className="px-4 py-3 text-right">Calories</th>
+                      <th className="px-4 py-3 text-right">Fiber / 100 kcal</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border bg-white">
+                    {topFiberContributors.map((item, index) => (
+                      <tr key={`${item.name}-${index}`} className="text-sm">
+                        <td className="px-4 py-3 font-semibold text-ink">{item.name}</td>
+                        <td className="px-4 py-3 text-right font-mono text-subtle">{Math.round(item.grams)} g</td>
+                        <td className="px-4 py-3 text-right font-mono text-subtle">{formatDecimal(item.fiber)} g</td>
+                        <td className="px-4 py-3 text-right font-mono text-subtle">{item.calories} kcal</td>
+                        <td className="px-4 py-3 text-right font-mono text-subtle">
+                          {item.fiberPer100kcal === null ? '—' : `${formatDecimal(item.fiberPer100kcal)} g`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyState text="No fiber contributors in this period." />
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function handlePeriodChange(
+  period: StatisticsPeriodId,
+  setSelectedPeriod: React.Dispatch<React.SetStateAction<StatisticsPeriodId>>,
+  setDays: (days: 7 | 30 | 90 | 3650) => void
+) {
+  setSelectedPeriod(period);
+
+  if (period === 'last_30_days') {
+    setDays(30);
+    return;
+  }
+
+  if (period === 'last_90_days') {
+    setDays(90);
+    return;
+  }
+
+  if (period === 'all_time' || period === 'custom_range') {
+    setDays(3650);
+    return;
+  }
+
+  setDays(7);
+}
+
+function mapDaysToPeriod(days: 7 | 30 | 90 | 3650): StatisticsPeriodId {
+  if (days === 30) return 'last_30_days';
+  if (days === 90) return 'last_90_days';
+  if (days === 3650) return 'all_time';
+  return 'this_week';
+}
+
+function formatShortDate(value: string): string {
+  return format(parseLocalDateInput(value) || new Date(), 'MMM d');
+}
+
+function formatLongDate(value: string): string {
+  return format(parseLocalDateInput(value) || new Date(), 'MMMM d, yyyy');
+}
+
+function formatDecimal(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(1) : '0.0';
+}
+
+function formatCalories(value: number): string {
+  return `${Math.round(value)} kcal`;
+}
+
+function dailySeriesLabel(name: string): string {
+  if (name === 'solubleFiber') return 'Soluble fiber';
+  if (name === 'insolubleFiber') return 'Insoluble fiber';
+  if (name === 'unknownFiber') return 'Unknown split';
+  if (name === 'totalFiber') return 'Total fiber';
+  if (name === 'fiber') return 'Fiber';
+  if (name === 'calories') return 'Calories';
+  if (name === 'protein') return 'Protein';
+  if (name === 'carbs') return 'Carbs';
+  if (name === 'fat') return 'Fat';
+  if (name === 'sugar') return 'Sugar';
+  if (name === 'saturatedFat') return 'Saturated fat';
+  return name;
+}
+
+function mealSeriesLabel(name: string): string {
+  if (name === 'protein') return 'Protein';
+  if (name === 'carbs') return 'Carbs';
+  if (name === 'fat') return 'Fat';
+  if (name === 'fiber') return 'Fiber';
+  if (name === 'calories') return 'Calories';
+  if (name === 'sugar') return 'Sugar';
+  if (name === 'saturatedFat') return 'Saturated fat';
+  return name;
+}
+
+function buildFiberCompositionModel(fiberRatio: FiberRatio | null): FiberCompositionModel {
+  const total = fiberRatio ? fiberRatio.soluble + fiberRatio.insoluble + fiberRatio.unknown : 0;
+  const known = fiberRatio ? fiberRatio.soluble + fiberRatio.insoluble : 0;
+  const isReliableSplit = !!fiberRatio?.isVisible && total > 0;
+
+  return {
+    total,
+    soluble: fiberRatio?.soluble ?? 0,
+    insoluble: fiberRatio?.insoluble ?? 0,
+    unknown: fiberRatio?.unknown ?? 0,
+    knownPercent: isReliableSplit ? (known / total) * 100 : null,
+    isReliableSplit,
+  };
+}
+
+function DailyChartPanel({
+  data,
+  selectedMetric,
+  onMetricChange,
+  hasFiberSplitData,
+}: {
+  data: Array<{
+    date: string;
+    totalFiber: number;
+    solubleFiber: number;
+    insolubleFiber: number;
+    unknownFiber: number;
+    calories: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    sugar: number;
+    saturatedFat: number;
+  }>;
+  selectedMetric: DailyChartMetric;
+  onMetricChange: (metric: DailyChartMetric) => void;
+  hasFiberSplitData: boolean;
+}) {
+  const activeMetric = DAILY_CHART_METRICS[selectedMetric];
+  const showFiberSplit = selectedMetric === 'fiber' && hasFiberSplitData;
+  const chartHeight = 320;
+
+  const getMetricValue = (point: {
+    totalFiber: number;
+    solubleFiber: number;
+    insolubleFiber: number;
+    unknownFiber: number;
+    calories: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    sugar: number;
+    saturatedFat: number;
+  }, metric: DailyChartMetric) => {
+    if (metric === 'fiber') return point.totalFiber;
+    if (metric === 'calories') return point.calories;
+    if (metric === 'protein') return point.protein;
+    if (metric === 'carbs') return point.carbs;
+    if (metric === 'fat') return point.fat;
+    if (metric === 'sugar') return point.sugar;
+    return point.saturatedFat;
+  };
+
+  const hasMetricData = selectedMetric === 'fiber'
+    ? (showFiberSplit
+      ? data.some(point => point.solubleFiber > 0 || point.insolubleFiber > 0)
+      : data.some(point => point.totalFiber > 0))
+    : data.some(point => getMetricValue(point, selectedMetric) > 0);
+
+  return (
+    <Panel title="Daily chart" subtitle={activeMetric.subtitle}>
+      <div className="mb-4 flex flex-wrap gap-2 rounded-[1.25rem] border border-border bg-white p-2 shadow-sm">
+        {DAILY_CHART_OPTIONS.map(option => {
+          const optionConfig = DAILY_CHART_METRICS[option];
+          const isActive = selectedMetric === option;
+
+          return (
+            <button
+              key={option}
+              type="button"
+              onClick={() => onMetricChange(option)}
+              className={cn(
+                'rounded-xl px-3 py-2 text-sm font-bold transition-all',
+                isActive
+                  ? 'bg-ink text-white shadow-sm'
+                  : 'bg-gray-50 text-subtle hover:text-ink hover:bg-gray-100'
+              )}
+            >
+              {optionConfig.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {hasMetricData ? (
+        <>
+          <ResponsiveContainer width="100%" height={chartHeight}>
+            <BarChart data={data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+              <XAxis
+                dataKey="date"
+                axisLine={false}
+                tickLine={false}
+                tick={{ fontSize: 12, fill: '#94a3b8' }}
+                tickFormatter={formatShortDate}
+                dy={10}
+              />
+              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
+              <Tooltip
+                contentStyle={tooltipStyle}
+                formatter={(value: number, name) => [activeMetric.formatter(Number(value)), dailySeriesLabel(String(name))]}
+                labelFormatter={(label) => formatLongDate(String(label))}
+              />
+              {showFiberSplit ? (
+                <>
+                  <Legend />
+                  <Bar dataKey="solubleFiber" stackId="fiber" fill="#60a5fa" name="Soluble fiber" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="insolubleFiber" stackId="fiber" fill="#f59e0b" name="Insoluble fiber" radius={[8, 8, 0, 0]} />
+                </>
+              ) : (
+                <Bar
+                  dataKey={selectedMetric === 'fiber' ? 'totalFiber' : selectedMetric}
+                  fill={activeMetric.barFill}
+                  name={selectedMetric === 'fiber' ? 'Total fiber' : activeMetric.label}
+                  radius={[8, 8, 0, 0]}
+                />
+              )}
+            </BarChart>
+          </ResponsiveContainer>
+
+          {selectedMetric === 'fiber' && !hasFiberSplitData && data.some(point => point.totalFiber > 0) ? (
+            <div className="mt-3 rounded-2xl border border-dashed border-border bg-gray-50 p-4 text-xs font-medium text-subtle">
+              Split data is incomplete for this period, so the chart falls back to total fiber.
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <EmptyState text={activeMetric.emptyState} />
+      )}
+    </Panel>
+  );
+}
+
+function FiberCompositionPanel({
+  composition,
+}: {
+  composition: FiberCompositionModel;
+}) {
+  const hasTotal = composition.total > 0;
+  const isReliable = composition.isReliableSplit && hasTotal;
+  const showSoluble = composition.soluble > 0;
+  const showInsoluble = composition.insoluble > 0;
+  const showUnknown = composition.unknown > 0;
+
+  return (
+    <Panel
+      title="Fiber composition"
+      subtitle={hasTotal ? 'Period-level fiber composition for the selected period' : 'No fiber data for this period'}
+    >
+      {hasTotal ? (
+        <div className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-widest text-subtle">Total fiber</div>
+              <div className="mt-2 text-3xl font-black text-ink">
+                {formatDecimal(composition.total)}
+                <span className="ml-1 text-sm font-bold text-subtle">g</span>
+              </div>
+            </div>
+            {isReliable && composition.knownPercent !== null ? (
+              <PillMetric label="Known split" value={`${formatDecimal(composition.knownPercent)}%`} tone="green" />
+            ) : (
+              <div className="rounded-2xl border border-dashed border-border bg-gray-50 px-4 py-3 text-xs font-medium text-subtle">
+                Split data is incomplete
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex h-3 overflow-hidden rounded-full bg-gray-100">
+              {isReliable ? (
+                <>
+                  <div
+                    className="h-full bg-blue-500"
+                    style={{ width: `${(composition.soluble / composition.total) * 100}%` }}
+                  />
+                  <div
+                    className="h-full bg-amber-500"
+                    style={{ width: `${(composition.insoluble / composition.total) * 100}%` }}
+                  />
+                </>
+              ) : (
+                <div className="h-full w-full bg-slate-400" />
+              )}
+            </div>
+            <div className="flex flex-wrap justify-between gap-2 text-[11px] font-medium text-subtle">
+              <span>
+                {isReliable
+                  ? 'Soluble and insoluble split are both reliable for this period.'
+                  : 'Only total fiber is reliable for this period. Unknown split is shown separately below.'}
+              </span>
+              <span>{formatDecimal(composition.total)} g total</span>
+            </div>
+          </div>
+
+          <div className={cn('grid grid-cols-1 gap-3', [showSoluble, showInsoluble, showUnknown].filter(Boolean).length > 1 ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
+            {showSoluble ? <PillMetric label="Soluble fiber" value={`${formatDecimal(composition.soluble)} g`} tone="blue" /> : null}
+            {showInsoluble ? <PillMetric label="Insoluble fiber" value={`${formatDecimal(composition.insoluble)} g`} tone="amber" /> : null}
+            {showUnknown ? <PillMetric label="Unknown split" value={`${formatDecimal(composition.unknown)} g`} tone="gray" /> : null}
+            {!isReliable ? (
+              <div className="rounded-2xl border border-dashed border-border bg-gray-50 p-4 text-sm text-subtle sm:col-span-2">
+                Split data is incomplete, so the known split percentage is hidden.
+              </div>
+            ) : null}
           </div>
         </div>
       ) : (
-        <div className="space-y-8">
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <StatSummaryCard label="Protein Avg" value={currentStats.aggregates.avgProtein ? currentStats.aggregates.avgProtein.toFixed(1) : '—'} unit="g" icon={<Award size={20} />} color="bg-blue-50 text-blue-600" />
-            <StatSummaryCard label="Calories Avg" value={currentStats.aggregates.avgCalories ? Math.round(currentStats.aggregates.avgCalories).toString() : '—'} unit="kcal" icon={<Flame size={20} />} color="bg-orange-50 text-orange-600" />
-            <StatSummaryCard label="Fiber Goal Hits" value={`${currentStats.aggregates.consistencyScore}%`} unit="" icon={<CalendarDays size={20} />} color="bg-emerald-50 text-emerald-700" />
-            <StatSummaryCard label="Vegetable Diversity" value={`${currentStats.aggregates.vegDiversity}`} unit="foods" icon={<Droplets size={20} />} color="bg-green-50 text-green-600" />
-          </div>
-
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            <ChartContainer title="Vegetable Analytics" subtitle="Conservative vegetable classification only">
-              {vegetableStats.length > 0 ? (
-                <div className="space-y-3">
-                  {vegetableStats.map((veg, index) => (
-                    <div key={veg.name}>
-                      <InsightRow label={`${index + 1}. ${veg.name}`} value={`${veg.grams.toFixed(0)}g`} tone="green" />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState text="No conservatively classified vegetables in this period." />
-              )}
-            </ChartContainer>
-
-            <ChartContainer title="Period Summary" subtitle="Useful context for the selected range">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <SummaryPill label="Total meals" value={currentStats.aggregates.totalMeals.toString()} />
-                <SummaryPill label="Logged days" value={currentStats.aggregates.loggedDays.toString()} />
-                <SummaryPill label="Coverage" value={`${currentStats.aggregates.coveragePercent}%`} />
-                <SummaryPill label="Avg fiber / day" value={`${currentStats.aggregates.avgFiber.toFixed(1)}g`} />
-              </div>
-            </ChartContainer>
-          </div>
-        </div>
+        <EmptyState text="No fiber data for this period." />
       )}
-    </div>
+    </Panel>
   );
 }
 
-function StatSummaryCard({ label, value, unit, icon, color }: { label: string, value: string, unit: string, icon: React.ReactNode, color: string }) {
+function MetricCard({
+  label,
+  value,
+  unit,
+  icon,
+  tone,
+}: {
+  label: string;
+  value: string;
+  unit: string;
+  icon: React.ReactNode;
+  tone: MetricTone;
+}) {
+  const toneStyles: Record<MetricTone, string> = {
+    orange: 'bg-orange-50 text-orange-600',
+    green: 'bg-green-50 text-green-600',
+    blue: 'bg-blue-50 text-blue-600',
+    amber: 'bg-amber-50 text-amber-600',
+    gray: 'bg-gray-50 text-gray-600',
+    neutral: 'bg-white text-ink border border-border',
+  };
+
   return (
-    <div className="bg-white p-6 rounded-[2rem] border border-border flex items-center gap-4 shadow-sm">
-      <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center", color)}>
+    <div className="rounded-[1.5rem] border border-border bg-white p-5 shadow-sm flex items-center gap-4">
+      <div className={cn('flex h-11 w-11 items-center justify-center rounded-2xl', toneStyles[tone])}>
         {icon}
       </div>
-      <div>
-        <p className="text-[10px] font-bold uppercase tracking-widest text-subtle mb-0.5">{label}</p>
-        <p className="text-xl font-black text-ink">
-          {value}<span className="text-xs font-bold text-subtle ml-0.5">{unit}</span>
-        </p>
+      <div className="min-w-0">
+        <div className="text-[10px] font-black uppercase tracking-widest text-subtle">
+          {label}
+        </div>
+        <div className="mt-1 text-xl font-black text-ink">
+          {value}
+          {unit ? <span className="ml-1 text-xs font-bold text-subtle">{unit}</span> : null}
+        </div>
       </div>
     </div>
   );
 }
 
-function ChartContainer({ title, subtitle, children }: { title: string, subtitle: string, children: React.ReactNode }) {
+function PillMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: 'orange' | 'blue' | 'amber' | 'green' | 'gray';
+}) {
+  const styles = {
+    orange: 'bg-orange-50 text-orange-700 border-orange-100',
+    blue: 'bg-blue-50 text-blue-700 border-blue-100',
+    amber: 'bg-amber-50 text-amber-700 border-amber-100',
+    green: 'bg-green-50 text-green-700 border-green-100',
+    gray: 'bg-gray-50 text-gray-700 border-gray-100',
+  }[tone];
+
   return (
-    <div className="bg-white p-8 rounded-[2.5rem] border border-border shadow-sm">
-      <div className="mb-8">
-        <h3 className="text-xl font-[800] tracking-tight">{title}</h3>
-        <p className="text-subtle text-xs font-medium">{subtitle}</p>
+    <div className={cn('rounded-2xl border px-4 py-3', styles)}>
+      <div className="text-[10px] font-black uppercase tracking-widest opacity-70">{label}</div>
+      <div className="mt-1 text-lg font-black">{value}</div>
+    </div>
+  );
+}
+
+function Panel({
+  title,
+  subtitle,
+  actions,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  actions?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-[2rem] border border-border bg-white p-6 shadow-sm">
+      <div className="mb-5 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-xl font-[800] tracking-tight">{title}</h3>
+          <p className="text-xs font-medium text-subtle">{subtitle}</p>
+        </div>
+        {actions ? <div className="shrink-0">{actions}</div> : null}
       </div>
       {children}
     </div>
   );
 }
 
-function ComparisonChip({ label, delta, percent, positiveIsGood }: { label: string; delta: number; percent: number | 'n/a'; positiveIsGood: boolean; }) {
-  const isPositive = delta > 0;
-  const isGood = positiveIsGood ? isPositive : !isPositive;
-  const tone = isGood ? 'bg-green-50 text-green-700 border-green-100' : 'bg-red-50 text-red-700 border-red-100';
-  const percentLabel = typeof percent === 'number' ? `${percent > 0 ? '+' : ''}${percent}%` : 'n/a';
-  return (
-    <div className={cn("rounded-2xl border p-4 flex items-center justify-between gap-3", tone)}>
-      <div>
-        <div className="text-[10px] font-black uppercase tracking-widest opacity-70">{label} vs prev period</div>
-        <div className="text-lg font-black">
-          {delta > 0 ? '+' : ''}{delta.toFixed(1)}
-        </div>
-      </div>
-      <div className="text-right">
-        <div className="text-[10px] font-bold uppercase tracking-widest opacity-70">Change</div>
-        <div className="text-sm font-black">{percentLabel}</div>
-      </div>
-    </div>
-  );
-}
-
-function InsightRow({ label, value, tone }: { label: string; value: string; tone: 'green' | 'amber' | 'gray'; }) {
-  const colors = {
-    green: 'bg-green-50 text-green-700 border-green-100',
-    amber: 'bg-amber-50 text-amber-700 border-amber-100',
-    gray: 'bg-gray-50 text-gray-700 border-gray-100',
-  }[tone];
-  return (
-    <div className={cn("rounded-2xl border px-4 py-3 flex items-center justify-between gap-4", colors)}>
-      <span className="text-sm font-semibold truncate">{label}</span>
-      <span className="text-sm font-black whitespace-nowrap">{value}</span>
-    </div>
-  );
-}
-
 function EmptyState({ text }: { text: string }) {
   return (
-    <div className="rounded-2xl border border-dashed border-border bg-gray-50 p-6 text-sm text-subtle italic">
+    <div className="rounded-2xl border border-dashed border-border bg-gray-50 p-6 text-sm text-subtle">
       {text}
     </div>
   );
 }
 
-function SummaryPill({ label, value }: { label: string; value: string }) {
+function DateField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
   return (
-    <div className="rounded-2xl border border-border bg-gray-50 p-4">
-      <div className="text-[10px] font-black uppercase tracking-widest text-subtle mb-1">{label}</div>
-      <div className="text-xl font-black text-ink">{value}</div>
+    <div className="space-y-1">
+      <label className="ml-1 text-[10px] font-bold uppercase tracking-widest text-subtle">{label}</label>
+      <input
+        type="date"
+        value={value}
+        onChange={event => onChange(event.target.value)}
+        className="w-full rounded-2xl border border-border bg-gray-50 px-4 py-3 text-sm text-ink outline-none transition-all focus:border-accent focus:bg-white focus:ring-2 focus:ring-accent/20"
+      />
     </div>
   );
 }
+
+function WeightCaloriesTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: { date?: string; weight?: number | null; calories?: number } }>;
+}) {
+  if (!active || !payload || payload.length === 0) {
+    return null;
+  }
+
+  const point = payload[0]?.payload;
+  if (!point) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-2xl bg-white p-4 text-sm text-ink" style={tooltipStyle}>
+      <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-subtle">
+        {point.date ? formatLongDate(point.date) : 'Observation'}
+      </div>
+      <div className="space-y-1">
+        <div className="font-semibold">Calories: {formatCalories(point.calories ?? 0)}</div>
+        <div className="font-semibold">
+          {point.weight === null || point.weight === undefined ? 'Weight: -' : `Weight: ${point.weight.toFixed(1)} kg`}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const tooltipStyle: React.CSSProperties = {
+  borderRadius: '16px',
+  border: 'none',
+  boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)',
+};

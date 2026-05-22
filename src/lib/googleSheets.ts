@@ -24,6 +24,8 @@ export async function fetchFoodsFromSheets(url: string = DEFAULT_SHEET_URL): Pro
             carbs: Number(row.carbs) || 0,
             protein: Number(row.protein) || 0,
             fat: Number(row.fat) || 0,
+            sugar: row.sugar != null && row.sugar !== '' ? Number(row.sugar) : null,
+            saturated_fat: row.saturated_fat != null && row.saturated_fat !== '' ? Number(row.saturated_fat) : null,
             soluble_fiber: Number(row.soluble_fiber) || 0,
             insoluble_fiber: Number(row.insoluble_fiber) || 0,
             total_fiber: Number(row.total_fiber) || 0,

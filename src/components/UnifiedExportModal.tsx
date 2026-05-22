@@ -10,6 +10,7 @@ import { buildExportRows } from '../lib/statsUtils';
 import { generateRangeSummaryText } from '../lib/exportUtils';
 import { cn, getFriendlyErrorMessage } from '../lib/utils';
 import { getLocalDayBounds } from '../lib/dateUtils';
+import { mapMealRecord } from '../lib/mealItemUtils';
 
 interface UnifiedExportModalProps {
   isOpen: boolean;
@@ -39,7 +40,7 @@ export default function UnifiedExportModal({
       // 1. Fetch data for the specified range
       const { data, error } = await supabase
         .from('meals')
-        .select('*, meal_items(food_id, grams, name, calories, protein, carbs, fat, is_custom)')
+        .select('*, meal_items(*)')
         .eq('user_id', user_id)
         .gte('created_at', getLocalDayBounds(range.start).start.toISOString())
         .lte('created_at', getLocalDayBounds(range.end).end.toISOString());
@@ -51,19 +52,7 @@ export default function UnifiedExportModal({
         return;
       }
 
-      const mappedMeals: Meal[] = data.map((m: any) => ({
-        ...m,
-        items: (m.meal_items || []).map((mi: any) => ({
-          foodId: mi.food_id,
-          quantityGrams: mi.grams,
-          name: mi.name,
-          calories: mi.calories,
-          protein: mi.protein,
-          carbs: mi.carbs,
-          fat: mi.fat,
-          is_custom: mi.is_custom
-        }))
-      }));
+      const mappedMeals: Meal[] = data.map((m: any) => mapMealRecord(m));
 
       if (formatType === 'csv') {
         exportToCSV(mappedMeals);
@@ -86,7 +75,7 @@ export default function UnifiedExportModal({
     try {
       const { data, error } = await supabase
         .from('meals')
-        .select('*, meal_items(food_id, grams, name, calories, protein, carbs, fat, is_custom)')
+        .select('*, meal_items(*)')
         .eq('user_id', user_id)
         .gte('created_at', getLocalDayBounds(range.start).start.toISOString())
         .lte('created_at', getLocalDayBounds(range.end).end.toISOString());
@@ -97,19 +86,7 @@ export default function UnifiedExportModal({
         return;
       }
 
-      const mappedMeals: Meal[] = data.map((m: any) => ({
-        ...m,
-        items: (m.meal_items || []).map((mi: any) => ({
-          foodId: mi.food_id,
-          quantityGrams: mi.grams,
-          name: mi.name,
-          calories: mi.calories,
-          protein: mi.protein,
-          carbs: mi.carbs,
-          fat: mi.fat,
-          is_custom: mi.is_custom
-        }))
-      }));
+      const mappedMeals: Meal[] = data.map((m: any) => mapMealRecord(m));
 
       const text = generateRangeSummaryText(mappedMeals, foods, range);
       await navigator.clipboard.writeText(text);
