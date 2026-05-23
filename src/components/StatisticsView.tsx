@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   Bar,
   BarChart,
@@ -15,7 +15,7 @@ import {
 import { format, subDays } from 'date-fns';
 import { Meal, Food } from '../types';
 import { cn } from '../lib/utils';
-import { Loader2, Scale, Flame, Droplets, Wheat, CalendarDays, Award } from 'lucide-react';
+import { Loader2, Scale, Flame, Droplets, Wheat, CalendarDays, Award, Leaf } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useWeightLogs } from '../lib/queries/weightQueries';
 import {
@@ -26,6 +26,12 @@ import {
 import { mapMealRecord } from '../lib/mealItemUtils';
 import { getFoodOrUnknown } from '../lib/utils';
 import { normalizeDateToLocal, parseLocalDateInput } from '../lib/dateUtils';
+import {
+  buildPlantIntakeRange,
+  buildPlantIntakeSummary,
+  type PlantIntakeMetricId,
+  type PlantIntakeRangeId,
+} from '../lib/plantIntake';
 
 interface StatisticsViewProps {
   userId: string;
@@ -38,8 +44,11 @@ interface StatisticsViewProps {
 
 type StatsTab = 'overview' | 'fiber' | 'macros' | 'weight';
 type DailyChartMetric = 'fiber' | 'calories' | 'protein' | 'carbs' | 'fat' | 'sugar' | 'saturatedFat';
+type DailyMacroMetric = 'calories' | 'protein' | 'carbs' | 'fat' | 'sugar' | 'saturatedFat' | 'fiber';
+type MacroDistributionSeriesId = 'protein' | 'carbs' | 'fat' | 'sugar' | 'saturatedFat';
 type FiberRatio = { soluble: number; insoluble: number; unknown: number; isVisible: boolean };
 type MetricTone = 'orange' | 'green' | 'blue' | 'amber' | 'gray' | 'neutral';
+type PlantIntakeMetricOption = { id: PlantIntakeMetricId; label: string };
 
 type FiberCompositionModel = {
   total: number;
@@ -59,6 +68,20 @@ type TopFiberContributor = {
 };
 
 const DAILY_CHART_OPTIONS: DailyChartMetric[] = ['fiber', 'calories', 'protein', 'carbs', 'fat', 'sugar', 'saturatedFat'];
+
+const DAILY_MACRO_METRICS: DailyMacroMetric[] = ['calories', 'protein', 'carbs', 'fat', 'sugar', 'saturatedFat', 'fiber'];
+
+const MACRO_DISTRIBUTION_SERIES: Array<{
+  id: MacroDistributionSeriesId;
+  label: string;
+  fill: string;
+}> = [
+  { id: 'protein', label: 'Protein', fill: '#3b82f6' },
+  { id: 'carbs', label: 'Carbs', fill: '#f59e0b' },
+  { id: 'fat', label: 'Fat', fill: '#6b7280' },
+  { id: 'sugar', label: 'Sugar', fill: '#ec4899' },
+  { id: 'saturatedFat', label: 'Saturated fat', fill: '#64748b' },
+];
 
 const DAILY_CHART_METRICS: Record<
   DailyChartMetric,
@@ -138,28 +161,59 @@ const TABS: { id: StatsTab; label: string }[] = [
   { id: 'weight', label: 'Weight' },
 ];
 
+const PLANT_INTAKE_METRICS: PlantIntakeMetricOption[] = [
+  { id: 'vegetables', label: 'Vegetables' },
+  { id: 'fruit', label: 'Fruit' },
+  { id: 'plant_based', label: 'Plant-based' },
+];
+
+const PLANT_INTAKE_RANGE_OPTIONS: { id: PlantIntakeRangeId; label: string }[] = [
+  { id: 'today', label: 'Today' },
+  { id: 'this_week', label: 'This Week' },
+  { id: 'last_7_days', label: 'Last 7 Days' },
+  { id: 'last_30_days', label: 'Last 30 Days' },
+  { id: 'custom_range', label: 'Custom Range' },
+];
+
+const FIBER_UNKNOWN_SPLIT_THRESHOLD = 0.05;
+
 export default function StatisticsView({ userId, meals, foods, days, setDays, isLoading }: StatisticsViewProps) {
   const [activeTab, setActiveTab] = useState<StatsTab>('overview');
   const [dailyChartMetric, setDailyChartMetric] = useState<DailyChartMetric>('fiber');
+  const [dailyMacroMetric, setDailyMacroMetric] = useState<DailyMacroMetric>('calories');
+  const [visibleMacroSeries, setVisibleMacroSeries] = useState<Record<MacroDistributionSeriesId, boolean>>({
+    protein: true,
+    carbs: true,
+    fat: true,
+    sugar: false,
+    saturatedFat: false,
+  });
   const [selectedPeriod, setSelectedPeriod] = useState<StatisticsPeriodId>(() => mapDaysToPeriod(days));
   const [customStart, setCustomStart] = useState(() => format(subDays(new Date(), 6), 'yyyy-MM-dd'));
   const [customEnd, setCustomEnd] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [plantIntakeMetric, setPlantIntakeMetric] = useState<PlantIntakeMetricId>('vegetables');
+  const [plantIntakeRange, setPlantIntakeRange] = useState<PlantIntakeRangeId>('today');
+  const [plantIntakeCustomStart, setPlantIntakeCustomStart] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [plantIntakeCustomEnd, setPlantIntakeCustomEnd] = useState(() => format(new Date(), 'yyyy-MM-dd'));
+  const [isPlantIntakeModalOpen, setIsPlantIntakeModalOpen] = useState(false);
   const [isTopFiberModalOpen, setIsTopFiberModalOpen] = useState(false);
   const [allMeals, setAllMeals] = useState<Meal[]>(meals);
   const [isStatsLoading, setIsStatsLoading] = useState(true);
+  const [hasLoadedStats, setHasLoadedStats] = useState(false);
   const { data: weightLogs = [] } = useWeightLogs(userId);
 
-  React.useEffect(() => {
+  useEffect(() => {
     let cancelled = false;
 
     async function fetchStatsMeals() {
       setIsStatsLoading(true);
+      setHasLoadedStats(false);
 
       const { data, error } = await supabase
         .from('meals')
         .select(`
           *,
-          meal_items (*)
+          meal_items (*, food:foods(*))
         `)
         .eq('user_id', userId)
         .order('created_at', { ascending: true });
@@ -174,6 +228,7 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
       }
 
       setIsStatsLoading(false);
+      setHasLoadedStats(true);
     }
 
     fetchStatsMeals();
@@ -187,6 +242,22 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
     () => getStatisticsPeriodRange(selectedPeriod, allMeals, { customStart, customEnd }),
     [selectedPeriod, allMeals, customStart, customEnd]
   );
+
+  const plantIntakeSelectedRange = useMemo(
+    () => buildPlantIntakeRange(plantIntakeRange, {
+      customStart: plantIntakeCustomStart,
+      customEnd: plantIntakeCustomEnd,
+    }),
+    [plantIntakeRange, plantIntakeCustomStart, plantIntakeCustomEnd]
+  );
+
+  const plantIntakeSummary = useMemo(
+    () => buildPlantIntakeSummary(allMeals, foods, plantIntakeSelectedRange, plantIntakeMetric),
+    [allMeals, foods, plantIntakeSelectedRange, plantIntakeMetric]
+  );
+
+  const plantIntakePreview = plantIntakeSummary.items.slice(0, 5);
+  const plantIntakeHasMore = plantIntakeSummary.items.length > plantIntakePreview.length;
 
   const periodMeals = useMemo(() => {
     return allMeals.filter(meal => {
@@ -223,6 +294,22 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
       fat: Number(day.metrics.fat.toFixed(1)),
       sugar: Number(day.metrics.sugar.toFixed(1)),
       saturatedFat: Number(day.metrics.saturatedFat.toFixed(1)),
+      gl: Number(day.metrics.gl.toFixed(1)),
+      hasMeals: day.hasMeals,
+    }));
+  }, [stats.calendarDailyData]);
+
+  const dailyMacroData = useMemo(() => {
+    return stats.calendarDailyData.map(day => ({
+      date: day.date,
+      calories: Number(day.metrics.calories.toFixed(0)),
+      protein: Number(day.metrics.protein.toFixed(1)),
+      carbs: Number(day.metrics.carbs.toFixed(1)),
+      fat: Number(day.metrics.fat.toFixed(1)),
+      sugar: Number(day.metrics.sugar.toFixed(1)),
+      saturatedFat: Number(day.metrics.saturatedFat.toFixed(1)),
+      fiber: Number(day.metrics.fiber.toFixed(1)),
+      gl: Number(day.metrics.gl.toFixed(1)),
       hasMeals: day.hasMeals,
     }));
   }, [stats.calendarDailyData]);
@@ -247,20 +334,6 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
   const weightCaloriesObservationCount = useMemo(() => {
     return weightCaloriesData.filter(point => point.weight !== null && point.hasMeals).length;
   }, [weightCaloriesData]);
-
-  const macroDailyData = useMemo(() => {
-    return stats.calendarDailyData.map(day => ({
-      date: day.date,
-      calories: Number(day.metrics.calories.toFixed(0)),
-      protein: Number(day.metrics.protein.toFixed(1)),
-      carbs: Number(day.metrics.carbs.toFixed(1)),
-      fat: Number(day.metrics.fat.toFixed(1)),
-      sugar: Number(day.metrics.sugar.toFixed(1)),
-      saturatedFat: Number(day.metrics.saturatedFat.toFixed(1)),
-      fiber: Number(day.metrics.fiber.toFixed(1)),
-      hasMeals: day.hasMeals,
-    }));
-  }, [stats.calendarDailyData]);
 
   const topFiberContributors = useMemo(() => {
     const contributors = new Map<string, TopFiberContributor & { count: number }>();
@@ -326,7 +399,9 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
   const hasFiberSplitDailyData = stats.aggregates.fiberRatio?.isVisible ?? false;
   const topFiberContributorsPreview = topFiberContributors.slice(0, 5);
 
-  if (isLoading || isStatsLoading) {
+  const showInitialLoading = isLoading || (isStatsLoading && !hasLoadedStats);
+
+  if (showInitialLoading) {
     return (
       <div className="flex flex-col items-center justify-center h-96">
         <Loader2 className="animate-spin text-accent mb-4" size={48} />
@@ -473,69 +548,199 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
             )}
           </Panel>
 
+          <Panel
+            title="Plant Intake"
+            subtitle="Independent plant-food intake tracking by classification"
+            actions={
+              plantIntakeHasMore ? (
+                <button
+                  type="button"
+                  onClick={() => setIsPlantIntakeModalOpen(true)}
+                  className="rounded-xl bg-gray-50 px-3 py-2 text-xs font-bold text-subtle transition-all hover:bg-gray-100 hover:text-ink"
+                >
+                  View all
+                </button>
+              ) : null
+            }
+          >
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-2 rounded-[1.25rem] border border-border bg-white p-2 shadow-sm">
+                {PLANT_INTAKE_METRICS.map(option => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setPlantIntakeMetric(option.id)}
+                    className={cn(
+                      'rounded-xl px-4 py-2 text-sm font-bold transition-all',
+                      plantIntakeMetric === option.id
+                        ? 'bg-ink text-white shadow-sm'
+                        : 'bg-gray-50 text-subtle hover:text-ink hover:bg-gray-100'
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap gap-2 rounded-[1.25rem] border border-border bg-white p-2 shadow-sm">
+                {PLANT_INTAKE_RANGE_OPTIONS.map(option => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setPlantIntakeRange(option.id)}
+                    className={cn(
+                      'rounded-xl px-4 py-2 text-sm font-bold transition-all',
+                      plantIntakeRange === option.id
+                        ? 'bg-accent text-white shadow-sm'
+                        : 'bg-gray-50 text-subtle hover:text-ink hover:bg-gray-100'
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+
+              {plantIntakeRange === 'custom_range' ? (
+                <div className="grid grid-cols-1 gap-3 rounded-[1.25rem] border border-border bg-white p-4 shadow-sm sm:grid-cols-2">
+                  <DateField
+                    label="Start date"
+                    value={plantIntakeCustomStart}
+                    onChange={setPlantIntakeCustomStart}
+                  />
+                  <DateField
+                    label="End date"
+                    value={plantIntakeCustomEnd}
+                    onChange={setPlantIntakeCustomEnd}
+                  />
+                </div>
+              ) : null}
+
+              <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_1fr]">
+              <div className="rounded-[1.75rem] border border-border bg-gradient-to-br from-emerald-50 to-white p-5 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-600">
+                    <Leaf size={22} />
+                  </div>
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-widest text-subtle">Selected total</div>
+                      <div className="mt-1 text-3xl font-black text-ink">
+                        {formatDecimal(plantIntakeSummary.totalGrams)}
+                        <span className="ml-1 text-sm font-bold text-subtle">g</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <div className="flex items-center justify-between gap-3 text-sm text-subtle">
+                      <span>Daily avg</span>
+                      <span className="font-semibold text-ink">
+                        {formatDecimal(plantIntakeSummary.totalGrams / Math.max(plantIntakeSelectedRange.totalDays, 1))} g
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 text-sm text-subtle">
+                      <span>{getPlantIntakeUniqueLabel(plantIntakeMetric)}</span>
+                      <span className="font-semibold text-ink">{plantIntakeSummary.items.length}</span>
+                    </div>
+                    <div className="pt-1 text-sm text-subtle">
+                      {plantIntakeSelectedRange.label} between {plantIntakeSelectedRange.start} and {plantIntakeSelectedRange.end}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-[1.75rem] border border-border bg-white p-4 shadow-sm">
+                  {plantIntakePreview.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={220}>
+                      <BarChart
+                        data={plantIntakePreview}
+                        layout="vertical"
+                        margin={{ top: 10, right: 20, left: 10, bottom: 10 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                        <XAxis
+                          type="number"
+                          axisLine={false}
+                          tickLine={false}
+                          tick={{ fontSize: 12, fill: '#94a3b8' }}
+                          tickFormatter={(value) => `${Number(value).toFixed(0)} g`}
+                        />
+                        <YAxis
+                          type="category"
+                          dataKey="name"
+                          width={120}
+                          axisLine={false}
+                          tickLine={false}
+                          tick={{ fontSize: 12, fill: '#475569' }}
+                        />
+                        <Tooltip
+                          contentStyle={tooltipStyle}
+                          formatter={(value: number) => [`${formatDecimal(Number(value))} g`, 'Consumed grams']}
+                        />
+                        <Bar dataKey="grams" fill="#16a34a" radius={[0, 8, 8, 0]} name="Consumed grams" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <EmptyState text="No matching intake logged for the selected range." />
+                  )}
+
+                  {plantIntakePreview.length > 0 ? (
+                    <div className="mt-4 overflow-hidden rounded-3xl border border-border">
+                      <table className="min-w-full divide-y divide-border">
+                        <thead className="bg-gray-50">
+                          <tr className="text-left text-[10px] font-black uppercase tracking-widest text-subtle">
+                            <th className="px-4 py-3">Food</th>
+                            <th className="px-4 py-3 text-right">Consumed grams</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border bg-white">
+                          {plantIntakePreview.map((item, index) => (
+                            <tr key={`${item.name}-${index}`} className="text-sm">
+                              <td className="px-4 py-3 font-semibold text-ink">{item.name}</td>
+                              <td className="px-4 py-3 text-right font-mono text-subtle">{formatDecimal(item.grams)} g</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </Panel>
+
           <Panel title="Macro overview" subtitle="Daily calorie and macro trends plus logged-day averages for the selected period">
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-              <Panel title="Daily calories" subtitle="Local calendar-day totals">
-                {macroDailyData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={260}>
-                    <LineChart data={macroDailyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                      <XAxis
-                        dataKey="date"
-                        axisLine={false}
-                        tickLine={false}
-                        tick={{ fontSize: 12, fill: '#94a3b8' }}
-                        tickFormatter={formatShortDate}
-                        dy={10}
-                      />
-                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
-                      <Tooltip
-                        contentStyle={tooltipStyle}
-                        formatter={(value: number) => [formatCalories(Number(value)), 'Calories']}
-                        labelFormatter={(label) => formatLongDate(String(label))}
-                      />
-                      <Line type="monotone" dataKey="calories" stroke="#f97316" strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 5 }} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <EmptyState text="No calorie data for this period." />
-                )}
-              </Panel>
+              <DailyMetricTrendPanel
+                title="Daily macros"
+                subtitle="One daily metric over the selected Statistics period"
+                data={dailyMacroData}
+                selectedMetric={dailyMacroMetric}
+                onMetricChange={setDailyMacroMetric}
+                availableMetrics={DAILY_MACRO_METRICS}
+              />
 
-            <Panel title="Daily macro distribution" subtitle="Protein, carbs, fat, sugar, and saturated fat by day">
-              {macroDailyData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={260}>
-                    <BarChart data={macroDailyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                      <XAxis
-                        dataKey="date"
-                        axisLine={false}
-                        tickLine={false}
-                        tick={{ fontSize: 12, fill: '#94a3b8' }}
-                        tickFormatter={formatShortDate}
-                        dy={10}
-                      />
-                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
-                      <Tooltip
-                        contentStyle={tooltipStyle}
-                        formatter={(value: number, name) => [formatDecimal(Number(value)), mealSeriesLabel(String(name))]}
-                        labelFormatter={(label) => formatLongDate(String(label))}
-                      />
-                    <Legend />
-                    <Bar dataKey="protein" stackId="macros" fill="#3b82f6" name="Protein" />
-                    <Bar dataKey="carbs" stackId="macros" fill="#f59e0b" name="Carbs" />
-                    <Bar dataKey="fat" stackId="macros" fill="#6b7280" name="Fat" />
-                    <Bar dataKey="sugar" stackId="macros" fill="#ec4899" name="Sugar" />
-                    <Bar dataKey="saturatedFat" stackId="macros" fill="#64748b" name="Saturated fat" />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <EmptyState text="No macro data for this period." />
-              )}
-            </Panel>
-          </div>
+              <DailyGlPanel data={dailyMacroData} />
+            </div>
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 mt-6">
+            <div className="mt-6">
+              <DailyMacroDistributionPanel
+                data={dailyMacroData}
+                visibleSeries={visibleMacroSeries}
+                onToggleSeries={(series) => {
+                  setVisibleMacroSeries(current => {
+                    const activeCount = MACRO_DISTRIBUTION_SERIES.filter(item => current[item.id]).length;
+                    if (current[series] && activeCount === 1) {
+                      return current;
+                    }
+
+                    return {
+                      ...current,
+                      [series]: !current[series],
+                    };
+                  });
+                }}
+              />
+            </div>
+
+            <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
               <PillMetric label="Avg calories / logged day" value={formatCalories(stats.aggregates.avgCalories)} tone="orange" />
               <PillMetric label="Avg protein / logged day" value={`${formatDecimal(stats.aggregates.avgProtein)} g`} tone="blue" />
               <PillMetric label="Avg carbs / logged day" value={`${formatDecimal(stats.aggregates.avgCarbs)} g`} tone="amber" />
@@ -617,64 +822,33 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
       {activeTab === 'macros' && (
         <section className="space-y-6">
           <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-            <Panel title="Daily calories" subtitle="Local calendar-day totals">
-              {macroDailyData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={300}>
-                  <LineChart data={macroDailyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis
-                      dataKey="date"
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fontSize: 12, fill: '#94a3b8' }}
-                      tickFormatter={formatShortDate}
-                      dy={10}
-                    />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
-                    <Tooltip
-                      contentStyle={tooltipStyle}
-                      formatter={(value: number) => [formatCalories(Number(value)), 'Calories']}
-                      labelFormatter={(label) => formatLongDate(String(label))}
-                    />
-                    <Line type="monotone" dataKey="calories" stroke="#f97316" strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 5 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : (
-                <EmptyState text="No calorie data for this period." />
-              )}
-            </Panel>
+            <DailyMetricTrendPanel
+              title="Daily macros"
+              subtitle="One daily metric over the selected Statistics period"
+              data={dailyMacroData}
+              selectedMetric={dailyMacroMetric}
+              onMetricChange={setDailyMacroMetric}
+              availableMetrics={DAILY_MACRO_METRICS}
+            />
 
-            <Panel title="Daily macro distribution" subtitle="Protein, carbs, fat, sugar, and saturated fat by day">
-              {macroDailyData.length > 0 ? (
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={macroDailyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis
-                      dataKey="date"
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fontSize: 12, fill: '#94a3b8' }}
-                      tickFormatter={formatShortDate}
-                      dy={10}
-                    />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
-                    <Tooltip
-                      contentStyle={tooltipStyle}
-                      formatter={(value: number, name) => [formatDecimal(Number(value)), mealSeriesLabel(String(name))]}
-                      labelFormatter={(label) => formatLongDate(String(label))}
-                    />
-                    <Legend />
-                    <Bar dataKey="protein" stackId="macros" fill="#3b82f6" name="Protein" />
-                    <Bar dataKey="carbs" stackId="macros" fill="#f59e0b" name="Carbs" />
-                    <Bar dataKey="fat" stackId="macros" fill="#6b7280" name="Fat" />
-                    <Bar dataKey="sugar" stackId="macros" fill="#ec4899" name="Sugar" />
-                    <Bar dataKey="saturatedFat" stackId="macros" fill="#64748b" name="Saturated fat" />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <EmptyState text="No macro data for this period." />
-              )}
-            </Panel>
+            <DailyGlPanel data={dailyMacroData} />
+            <DailyMacroDistributionPanel
+              data={dailyMacroData}
+              visibleSeries={visibleMacroSeries}
+              onToggleSeries={(series) => {
+                setVisibleMacroSeries(current => {
+                  const activeCount = MACRO_DISTRIBUTION_SERIES.filter(item => current[item.id]).length;
+                  if (current[series] && activeCount === 1) {
+                    return current;
+                  }
+
+                  return {
+                    ...current,
+                    [series]: !current[series],
+                  };
+                });
+              }}
+            />
           </div>
 
           <Panel title="Period macro summary" subtitle="Totals for the selected period">
@@ -759,6 +933,51 @@ export default function StatisticsView({ userId, meals, foods, days, setDays, is
           )}
         </section>
       )}
+
+      {isPlantIntakeModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-4xl rounded-[2rem] border border-border bg-white p-6 shadow-2xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-2xl font-[800] tracking-tight">All plant intake items</h3>
+                <p className="text-xs font-medium text-subtle">
+                  {plantIntakeMetric === 'vegetables' ? 'Vegetable' : plantIntakeMetric === 'fruit' ? 'Fruit' : 'Plant-based'} items in the selected range
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPlantIntakeModalOpen(false)}
+                className="rounded-xl bg-gray-50 px-3 py-2 text-xs font-bold text-subtle transition-all hover:bg-gray-100 hover:text-ink"
+              >
+                Close
+              </button>
+            </div>
+
+            {plantIntakeSummary.items.length > 0 ? (
+              <div className="overflow-auto rounded-3xl border border-border">
+                <table className="min-w-full divide-y divide-border">
+                  <thead className="sticky top-0 bg-gray-50">
+                    <tr className="text-left text-[10px] font-black uppercase tracking-widest text-subtle">
+                      <th className="px-4 py-3">Food</th>
+                      <th className="px-4 py-3 text-right">Consumed grams</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border bg-white">
+                    {plantIntakeSummary.items.map((item, index) => (
+                      <tr key={`${item.name}-${index}`} className="text-sm">
+                        <td className="px-4 py-3 font-semibold text-ink">{item.name}</td>
+                        <td className="px-4 py-3 text-right font-mono text-subtle">{formatDecimal(item.grams)} g</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyState text="No matching intake logged for the selected range." />
+            )}
+          </div>
+        </div>
+      ) : null}
 
       {isTopFiberModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
@@ -891,16 +1110,75 @@ function mealSeriesLabel(name: string): string {
 function buildFiberCompositionModel(fiberRatio: FiberRatio | null): FiberCompositionModel {
   const total = fiberRatio ? fiberRatio.soluble + fiberRatio.insoluble + fiberRatio.unknown : 0;
   const known = fiberRatio ? fiberRatio.soluble + fiberRatio.insoluble : 0;
-  const isReliableSplit = !!fiberRatio?.isVisible && total > 0;
+  const hasKnownSplit = total > 0 && known > 0;
 
   return {
     total,
     soluble: fiberRatio?.soluble ?? 0,
     insoluble: fiberRatio?.insoluble ?? 0,
     unknown: fiberRatio?.unknown ?? 0,
-    knownPercent: isReliableSplit ? (known / total) * 100 : null,
-    isReliableSplit,
+    knownPercent: hasKnownSplit ? (known / total) * 100 : null,
+    isReliableSplit: hasKnownSplit,
   };
+}
+
+function buildFiberRatioLabel(soluble: number, insoluble: number): string | null {
+  const hasSoluble = soluble > 0;
+  const hasInsoluble = insoluble > 0;
+
+  if (!hasSoluble && !hasInsoluble) {
+    return null;
+  }
+
+  if (!hasSoluble) {
+    return '0 : 1';
+  }
+
+  if (!hasInsoluble) {
+    return '1 : 0';
+  }
+
+  const base = Math.min(soluble, insoluble);
+
+  return `${formatRatioPart(soluble / base)} : ${formatRatioPart(insoluble / base)}`;
+}
+
+function formatRatioPart(value: number): string {
+  if (!Number.isFinite(value)) return '0';
+
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function getPlantIntakeUniqueLabel(metric: PlantIntakeMetricId): string {
+  if (metric === 'vegetables') return 'Unique vegetables';
+  if (metric === 'fruit') return 'Unique fruits';
+  return 'Unique plant foods';
+}
+
+function dailyMetricLabel(metric: DailyMacroMetric): string {
+  if (metric === 'calories') return 'Calories';
+  if (metric === 'protein') return 'Protein';
+  if (metric === 'carbs') return 'Carbs';
+  if (metric === 'fat') return 'Fat';
+  if (metric === 'sugar') return 'Sugar';
+  if (metric === 'saturatedFat') return 'Saturated fat';
+  return 'Fiber';
+}
+
+function dailyMetricValueFormatter(metric: DailyMacroMetric, value: number): string {
+  if (metric === 'calories') return formatCalories(value);
+  return `${formatDecimal(value)} g`;
+}
+
+function dailyMetricStroke(metric: DailyMacroMetric): string {
+  if (metric === 'calories') return '#f97316';
+  if (metric === 'protein') return '#3b82f6';
+  if (metric === 'carbs') return '#f59e0b';
+  if (metric === 'fat') return '#6b7280';
+  if (metric === 'sugar') return '#ec4899';
+  if (metric === 'saturatedFat') return '#64748b';
+  return '#22c55e';
 }
 
 function DailyChartPanel({
@@ -1037,10 +1315,13 @@ function FiberCompositionPanel({
   composition: FiberCompositionModel;
 }) {
   const hasTotal = composition.total > 0;
-  const isReliable = composition.isReliableSplit && hasTotal;
-  const showSoluble = composition.soluble > 0;
-  const showInsoluble = composition.insoluble > 0;
-  const showUnknown = composition.unknown > 0;
+  const hasKnownSplit = composition.isReliableSplit && hasTotal;
+  const knownTotal = composition.soluble + composition.insoluble;
+  const hasRatio = hasKnownSplit;
+  const ratioLabel = buildFiberRatioLabel(composition.soluble, composition.insoluble);
+  const solublePercent = knownTotal > 0 ? (composition.soluble / knownTotal) * 100 : 0;
+  const insolublePercent = knownTotal > 0 ? (composition.insoluble / knownTotal) * 100 : 0;
+  const showUnknown = composition.unknown > FIBER_UNKNOWN_SPLIT_THRESHOLD;
 
   return (
     <Panel
@@ -1057,55 +1338,333 @@ function FiberCompositionPanel({
                 <span className="ml-1 text-sm font-bold text-subtle">g</span>
               </div>
             </div>
-            {isReliable && composition.knownPercent !== null ? (
-              <PillMetric label="Known split" value={`${formatDecimal(composition.knownPercent)}%`} tone="green" />
+            {hasKnownSplit && composition.knownPercent !== null ? (
+              <PillMetric label="Known split %" value={`${formatDecimal(composition.knownPercent)}%`} tone="green" />
             ) : (
               <div className="rounded-2xl border border-dashed border-border bg-gray-50 px-4 py-3 text-xs font-medium text-subtle">
-                Split data is incomplete
+                Split data is unavailable
               </div>
             )}
           </div>
 
           <div className="space-y-2">
             <div className="flex h-3 overflow-hidden rounded-full bg-gray-100">
-              {isReliable ? (
+              {hasRatio ? (
                 <>
                   <div
                     className="h-full bg-blue-500"
-                    style={{ width: `${(composition.soluble / composition.total) * 100}%` }}
+                    style={{ width: `${solublePercent}%` }}
                   />
                   <div
                     className="h-full bg-amber-500"
-                    style={{ width: `${(composition.insoluble / composition.total) * 100}%` }}
+                    style={{ width: `${insolublePercent}%` }}
                   />
                 </>
               ) : (
                 <div className="h-full w-full bg-slate-400" />
               )}
             </div>
-            <div className="flex flex-wrap justify-between gap-2 text-[11px] font-medium text-subtle">
-              <span>
-                {isReliable
-                  ? 'Soluble and insoluble split are both reliable for this period.'
-                  : 'Only total fiber is reliable for this period. Unknown split is shown separately below.'}
-              </span>
-              <span>{formatDecimal(composition.total)} g total</span>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-subtle">
+              {hasRatio ? (
+                <>
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-blue-500" />
+                    Soluble {formatDecimal(solublePercent)}%
+                  </span>
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-amber-500" />
+                    Insoluble {formatDecimal(insolublePercent)}%
+                  </span>
+                </>
+              ) : (
+                <span>Soluble and insoluble split unavailable</span>
+              )}
             </div>
           </div>
 
-          <div className={cn('grid grid-cols-1 gap-3', [showSoluble, showInsoluble, showUnknown].filter(Boolean).length > 1 ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
-            {showSoluble ? <PillMetric label="Soluble fiber" value={`${formatDecimal(composition.soluble)} g`} tone="blue" /> : null}
-            {showInsoluble ? <PillMetric label="Insoluble fiber" value={`${formatDecimal(composition.insoluble)} g`} tone="amber" /> : null}
-            {showUnknown ? <PillMetric label="Unknown split" value={`${formatDecimal(composition.unknown)} g`} tone="gray" /> : null}
-            {!isReliable ? (
-              <div className="rounded-2xl border border-dashed border-border bg-gray-50 p-4 text-sm text-subtle sm:col-span-2">
-                Split data is incomplete, so the known split percentage is hidden.
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <PillMetric label="Soluble fiber" value={`${formatDecimal(composition.soluble)} g`} tone="blue" />
+            <PillMetric label="Insoluble fiber" value={`${formatDecimal(composition.insoluble)} g`} tone="amber" />
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="rounded-2xl border border-border bg-gray-50 px-4 py-3">
+              <div className="text-[10px] font-black uppercase tracking-widest text-subtle">Soluble : Insoluble</div>
+              <div className="mt-2 text-lg font-black text-ink">
+                {hasRatio && ratioLabel ? ratioLabel : 'Unavailable'}
+              </div>
+            </div>
+            {showUnknown ? (
+              <div className="rounded-2xl border border-border bg-gray-50 px-4 py-3">
+                <div className="text-[10px] font-black uppercase tracking-widest text-subtle">Unknown split</div>
+                <div className="mt-2 text-lg font-black text-ink">{formatDecimal(composition.unknown)} g</div>
+                <div className="mt-1 text-[11px] font-medium text-subtle">
+                  Fiber grams without a reliable soluble/insoluble breakdown.
+                </div>
               </div>
             ) : null}
           </div>
         </div>
       ) : (
         <EmptyState text="No fiber data for this period." />
+      )}
+    </Panel>
+  );
+}
+
+function DailyMetricTrendPanel({
+  title,
+  subtitle,
+  data,
+  selectedMetric,
+  onMetricChange,
+  availableMetrics,
+}: {
+  title: string;
+  subtitle: string;
+  data: Array<{
+    date: string;
+    calories: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    sugar: number;
+    saturatedFat: number;
+    fiber: number;
+    gl: number;
+    hasMeals: boolean;
+  }>;
+  selectedMetric: DailyMacroMetric;
+  onMetricChange: (metric: DailyMacroMetric) => void;
+  availableMetrics: DailyMacroMetric[];
+}) {
+  const hasData = data.some(point => point.hasMeals);
+  const activeLabel = dailyMetricLabel(selectedMetric);
+  const stroke = dailyMetricStroke(selectedMetric);
+
+  return (
+    <Panel title={title} subtitle={subtitle}>
+      <div className="mb-4 flex flex-wrap gap-2 rounded-[1.25rem] border border-border bg-white p-2 shadow-sm">
+        {availableMetrics.map(metric => (
+          <button
+            key={metric}
+            type="button"
+            onClick={() => onMetricChange(metric)}
+            className={cn(
+              'rounded-xl px-3 py-2 text-sm font-bold transition-all',
+              selectedMetric === metric
+                ? 'bg-ink text-white shadow-sm'
+                : 'bg-gray-50 text-subtle hover:text-ink hover:bg-gray-100'
+            )}
+          >
+            {dailyMetricLabel(metric)}
+          </button>
+        ))}
+      </div>
+
+      {hasData ? (
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+            <XAxis
+              dataKey="date"
+              axisLine={false}
+              tickLine={false}
+              tick={{ fontSize: 12, fill: '#94a3b8' }}
+              tickFormatter={formatShortDate}
+              dy={10}
+            />
+            <YAxis
+              axisLine={false}
+              tickLine={false}
+              tick={{ fontSize: 12, fill: '#94a3b8' }}
+              tickFormatter={(value) => selectedMetric === 'calories' ? formatCalories(Number(value)) : `${Number(value).toFixed(1)} g`}
+            />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              formatter={(value: number) => [dailyMetricValueFormatter(selectedMetric, Number(value)), activeLabel]}
+              labelFormatter={(label) => formatLongDate(String(label))}
+            />
+            <Line
+              type="monotone"
+              dataKey={selectedMetric}
+              stroke={stroke}
+              strokeWidth={3}
+              dot={{ r: 3 }}
+              activeDot={{ r: 5 }}
+              name={activeLabel}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      ) : (
+        <EmptyState text={`No ${dailyMetricLabel(selectedMetric).toLowerCase()} data for this period.`} />
+      )}
+    </Panel>
+  );
+}
+
+function DailyGlPanel({
+  data,
+}: {
+  data: Array<{
+    date: string;
+    calories: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    sugar: number;
+    saturatedFat: number;
+    fiber: number;
+    gl: number;
+    hasMeals: boolean;
+  }>;
+}) {
+  const hasData = data.some(point => point.hasMeals);
+
+  return (
+    <Panel title="Daily GL" subtitle="Daily glycemic load by local calendar day">
+      {hasData ? (
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+            <XAxis
+              dataKey="date"
+              axisLine={false}
+              tickLine={false}
+              tick={{ fontSize: 12, fill: '#94a3b8' }}
+              tickFormatter={formatShortDate}
+              dy={10}
+            />
+            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
+            <Tooltip content={<DailyGlTooltip />} />
+            <Line
+              type="monotone"
+              dataKey="gl"
+              stroke="#0f766e"
+              strokeWidth={3}
+              dot={{ r: 3 }}
+              activeDot={{ r: 5 }}
+              name="GL"
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      ) : (
+        <EmptyState text="No reliable glycemic load data for this period." />
+      )}
+    </Panel>
+  );
+}
+
+function DailyGlTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: { date?: string; gl?: number; calories?: number; carbs?: number } }>;
+}) {
+  if (!active || !payload || payload.length === 0) {
+    return null;
+  }
+
+  const point = payload[0]?.payload;
+  if (!point) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-2xl bg-white p-4 text-sm text-ink" style={tooltipStyle}>
+      <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-subtle">
+        {point.date ? formatLongDate(point.date) : 'Observation'}
+      </div>
+      <div className="space-y-1">
+        <div className="font-semibold">GL: {formatDecimal(point.gl ?? 0)}</div>
+        <div className="font-semibold">Calories: {formatCalories(point.calories ?? 0)}</div>
+        <div className="font-semibold">Carbs: {formatDecimal(point.carbs ?? 0)} g</div>
+      </div>
+    </div>
+  );
+}
+
+function DailyMacroDistributionPanel({
+  data,
+  visibleSeries,
+  onToggleSeries,
+}: {
+  data: Array<{
+    date: string;
+    calories: number;
+    protein: number;
+    carbs: number;
+    fat: number;
+    sugar: number;
+    saturatedFat: number;
+    fiber: number;
+    gl: number;
+    hasMeals: boolean;
+  }>;
+  visibleSeries: Record<MacroDistributionSeriesId, boolean>;
+  onToggleSeries: (series: MacroDistributionSeriesId) => void;
+}) {
+  const hasData = data.some(point => point.hasMeals);
+  const anyVisible = MACRO_DISTRIBUTION_SERIES.some(series => visibleSeries[series.id]);
+
+  return (
+    <Panel title="Daily macro distribution" subtitle="Protein, carbs, fat, sugar, and saturated fat by day">
+      <div className="mb-4 flex flex-wrap gap-2 rounded-[1.25rem] border border-border bg-white p-2 shadow-sm">
+        {MACRO_DISTRIBUTION_SERIES.map(series => (
+          <button
+            key={series.id}
+            type="button"
+            onClick={() => onToggleSeries(series.id)}
+            className={cn(
+              'rounded-xl px-3 py-2 text-sm font-bold transition-all',
+              visibleSeries[series.id]
+                ? 'bg-ink text-white shadow-sm'
+                : 'bg-gray-50 text-subtle hover:text-ink hover:bg-gray-100'
+            )}
+          >
+            {series.label}
+          </button>
+        ))}
+      </div>
+
+      {hasData ? (
+        anyVisible ? (
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+              <XAxis
+                dataKey="date"
+                axisLine={false}
+                tickLine={false}
+                tick={{ fontSize: 12, fill: '#94a3b8' }}
+                tickFormatter={formatShortDate}
+                dy={10}
+              />
+              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8' }} />
+              <Tooltip
+                contentStyle={tooltipStyle}
+                formatter={(value: number, name) => [`${formatDecimal(Number(value))} g`, mealSeriesLabel(String(name))]}
+                labelFormatter={(label) => formatLongDate(String(label))}
+              />
+              {MACRO_DISTRIBUTION_SERIES.map(series => (
+                visibleSeries[series.id] ? (
+                  <Bar
+                    key={series.id}
+                    dataKey={series.id}
+                    stackId="macros"
+                    fill={series.fill}
+                    name={series.label}
+                  />
+                ) : null
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        ) : (
+          <EmptyState text="Select at least one macro series to display the chart." />
+        )
+      ) : (
+        <EmptyState text="No macro data for this period." />
       )}
     </Panel>
   );

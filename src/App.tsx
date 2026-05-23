@@ -114,6 +114,17 @@ function DayStrip({ selectedDate, onSelect, onOpenPicker }: DayStripProps) {
 }
 // --------------------------------------
 
+function isStaleSupabaseSessionError(error: unknown): boolean {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'object' && error !== null && 'message' in error
+      ? String((error as { message?: unknown }).message ?? '')
+      : String(error ?? '');
+
+  const normalized = message.toLowerCase();
+  return normalized.includes('invalid refresh token') && normalized.includes('refresh token not found');
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
@@ -156,10 +167,39 @@ export default function App() {
   // Root-level Auth Handler
   // --------------------------------------
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      setSessionLoading(false);
-    });
+    let cancelled = false;
+
+    const restoreSession = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+
+        if (cancelled) return;
+
+        if (error) {
+          if (isStaleSupabaseSessionError(error)) {
+            void supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
+            if (!cancelled) {
+              setUser(null);
+            }
+          } else {
+            console.error('Error restoring Supabase session:', error);
+          }
+        } else {
+          setUser(session?.user ?? null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Unexpected Supabase session error:', error);
+          setUser(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setSessionLoading(false);
+        }
+      }
+    };
+
+    restoreSession();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'PASSWORD_RECOVERY') {
@@ -170,6 +210,7 @@ export default function App() {
     });
 
     return () => {
+      cancelled = true;
       subscription.unsubscribe();
     };
   }, []);
@@ -185,7 +226,7 @@ export default function App() {
         .from('meals')
         .select(`
           *,
-          meal_items (*)
+          meal_items (*, food:foods(*))
         `)
         .eq('user_id', user.id)
         .gte('created_at', startOfDay.toISOString())
@@ -219,7 +260,7 @@ export default function App() {
         .from('meals')
         .select(`
           *,
-          meal_items (*)
+          meal_items (*, food:foods(*))
         `)
         .eq('user_id', user.id)
         .gte('created_at', startOfRange.toISOString())

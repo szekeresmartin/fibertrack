@@ -46,6 +46,8 @@ export function calculateItemGL(food: Food, quantity: number): number {
 
 export function isConservativeVegetable(food: Food): boolean {
   if (!food) return false;
+  if (food.is_vegetable === true) return true;
+  if (food.is_vegetable === false) return false;
   if (food.category !== 'vegetable') return false;
 
   const text = `${food.name_hu || ''} ${food.name_en || ''} ${food.brand || ''}`.toLowerCase();

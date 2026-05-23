@@ -18,6 +18,10 @@ export interface Food {
   source: 'sheets' | 'local';
   isDeleted?: boolean;
   category?: 'vegetable' | 'other';
+  is_vegetable?: boolean;
+  is_fruit?: boolean;
+  is_plant_based?: boolean;
+  food_group?: string | null;
 }
 
 export interface MealItem {
@@ -33,6 +37,10 @@ export interface MealItem {
   saturated_fat?: number | null;
   is_custom?: boolean;
   joinedFood?: Food | null;
+  is_vegetable?: boolean;
+  is_fruit?: boolean;
+  is_plant_based?: boolean;
+  food_group?: string | null;
   fiber?: number;
   total_fiber?: number;
   soluble_fiber?: number;

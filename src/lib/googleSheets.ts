@@ -31,6 +31,10 @@ export async function fetchFoodsFromSheets(url: string = DEFAULT_SHEET_URL): Pro
             total_fiber: Number(row.total_fiber) || 0,
             gi: row.gi != null && row.gi !== '' ? Number(row.gi) : undefined,
             source: 'sheets',
+            is_vegetable: row.is_vegetable === true || row.is_vegetable === 'true' || row.is_vegetable === 1 ? true : undefined,
+            is_fruit: row.is_fruit === true || row.is_fruit === 'true' || row.is_fruit === 1 ? true : undefined,
+            is_plant_based: row.is_plant_based === true || row.is_plant_based === 'true' || row.is_plant_based === 1 ? true : undefined,
+            food_group: row.food_group ?? null,
           }));
           resolve(foods);
         },

@@ -1,6 +1,7 @@
 import { Food, Meal, MealItem } from '../types';
 
 type RawMealItem = Record<string, any>;
+type RawFoodRecord = Record<string, any>;
 type RawMealRecord = Record<string, any> & {
   items?: RawMealItem[] | null;
   meal_items?: RawMealItem[] | null;
@@ -32,8 +33,43 @@ type MealItemWritePayload = {
   is_custom: boolean;
 };
 
+function parseBooleanField(value: unknown): boolean | undefined {
+  if (value === true || value === 1 || value === 'true') return true;
+  if (value === false || value === 0 || value === 'false') return false;
+  return undefined;
+}
+
+export function mapFoodRecord(rawFood: RawFoodRecord): Food {
+  return {
+    id: String(rawFood.id),
+    name_hu: rawFood.name_hu ?? rawFood.name ?? 'Unknown Food',
+    name_en: rawFood.name_en ?? undefined,
+    calories: Number(rawFood.calories ?? 0),
+    carbs: Number(rawFood.carbs ?? 0),
+    protein: Number(rawFood.protein ?? 0),
+    fat: Number(rawFood.fat ?? 0),
+    sugar: rawFood.sugar ?? null,
+    saturated_fat: rawFood.saturated_fat ?? null,
+    soluble_fiber: Number(rawFood.soluble_fiber ?? 0),
+    insoluble_fiber: Number(rawFood.insoluble_fiber ?? 0),
+    total_fiber: Number(rawFood.total_fiber ?? 0),
+    sugar_source: rawFood.sugar_source ?? null,
+    saturated_fat_source: rawFood.saturated_fat_source ?? null,
+    gi: rawFood.gi ?? undefined,
+    brand: rawFood.brand ?? undefined,
+    source: rawFood.source === 'sheets' ? 'sheets' : 'local',
+    isDeleted: rawFood.isDeleted ?? undefined,
+    category: rawFood.category ?? undefined,
+    is_vegetable: parseBooleanField(rawFood.is_vegetable),
+    is_fruit: parseBooleanField(rawFood.is_fruit),
+    is_plant_based: parseBooleanField(rawFood.is_plant_based),
+    food_group: rawFood.food_group ?? null,
+  };
+}
+
 export function mapMealItem(raw: RawMealItem): MealItem {
   const totalFiber = raw.total_fiber ?? raw.fiber ?? null;
+  const joinedFoodRaw = raw.food ?? raw.foods ?? raw.joinedFood ?? null;
 
   return {
     foodId: raw.food_id ?? raw.foodId ?? null,
@@ -51,6 +87,11 @@ export function mapMealItem(raw: RawMealItem): MealItem {
     soluble_fiber: raw.soluble_fiber ?? undefined,
     insoluble_fiber: raw.insoluble_fiber ?? undefined,
     gi: raw.gi ?? undefined,
+    is_vegetable: parseBooleanField(raw.is_vegetable),
+    is_fruit: parseBooleanField(raw.is_fruit),
+    is_plant_based: parseBooleanField(raw.is_plant_based),
+    food_group: raw.food_group ?? undefined,
+    joinedFood: joinedFoodRaw ? mapFoodRecord(joinedFoodRaw) : null,
   };
 }
 
@@ -89,6 +130,18 @@ export function buildMealWritePayload(
 
 function pickFoodForMealItem(item: MealItem, foods: Food[]) {
   if (item.is_custom || !item.foodId) {
+    return null;
+  }
+
+  return foods.find((food) => food.id === item.foodId) ?? null;
+}
+
+export function resolveMealItemFood(item: MealItem, foods: Food[]): Food | null {
+  if (item.joinedFood) {
+    return item.joinedFood;
+  }
+
+  if (!item.foodId) {
     return null;
   }
 
