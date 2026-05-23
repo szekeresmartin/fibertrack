@@ -421,6 +421,13 @@ export default function PlanView({ foods, user }: PlanViewProps) {
       const ids = dayMeals.map((meal) => meal.id);
       if (ids.length === 0) return;
 
+      const { error: itemDeleteError } = await supabase
+        .from('planned_meal_items')
+        .delete()
+        .in('planned_meal_id', ids);
+
+      if (itemDeleteError) throw itemDeleteError;
+
       const { error: deleteError } = await supabase
         .from('planned_meals')
         .delete()

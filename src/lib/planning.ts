@@ -193,7 +193,7 @@ export function buildPlannedMealItemInsertPayloadFromActualItem(
   item: Partial<PlannedMealItem> & Record<string, unknown>,
   food?: Partial<Food> & Record<string, unknown> | null
 ): PlannedMealItemInsertPayload {
-  const grams = Number(item.grams ?? 0);
+  const grams = Number(item.grams ?? item.quantityGrams ?? 0);
   const source = (food ?? item) as Partial<Food> & Record<string, unknown>;
   const customName = item.custom_name ?? source.name_hu ?? source.name ?? null;
 
