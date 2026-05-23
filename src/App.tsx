@@ -27,14 +27,13 @@ import {
   Calendar,
   Copy,
   BarChart2,
-  ShoppingCart,
   Scale
 } from 'lucide-react';
 import { Food, Meal, DailyTotals } from './types';
 import { fetchFoodsFromSheets } from './lib/googleSheets';
 import { cn, calculateMealTotals, getFriendlyErrorMessage, getGlycemicLoadLabel, getFoodOrUnknown } from './lib/utils';
 import StatisticsView from './components/StatisticsView';
-import WeeklyPlannerView from './components/WeeklyPlannerView';
+import PlanView from './components/PlanView';
 import WeightView from './components/WeightView';
 import { downloadDayAsCSV, generateDaySummaryText } from './lib/exportUtils';
 import { buildMealItemWritePayloads, buildMealWritePayload, mapMealRecord } from './lib/mealItemUtils';
@@ -133,7 +132,7 @@ export default function App() {
   const [sheetUrl, setSheetUrl] = useState<string>(() => {
     return localStorage.getItem('fiber_track_sheet_url') || '';
   });
-  const [view, setView] = useState<'timeline' | 'database' | 'statistics' | 'planner' | 'weight'>('timeline');
+  const [view, setView] = useState<'timeline' | 'database' | 'statistics' | 'plan' | 'weight'>('timeline');
   const [statsMeals, setStatsMeals] = useState<Meal[]>([]);
   const [statsDays, setStatsDays] = useState<7 | 30 | 90 | 3650>(7);
   const [isStatsLoading, setIsStatsLoading] = useState(false);
@@ -674,9 +673,9 @@ export default function App() {
             <BarChart2 size={16} />
             Statistics
           </button>
-          <button onClick={() => setView('planner')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'planner' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
-            <ShoppingCart size={16} />
-            Meal Planner
+          <button onClick={() => setView('plan')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'plan' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
+            <Calendar size={16} />
+            Plan
           </button>
           <button onClick={() => setView('weight')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'weight' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
             <Scale size={16} />
@@ -752,13 +751,13 @@ export default function App() {
                 <BarChart2 size={18} />
               </button>
               <button 
-                onClick={() => setView('planner')}
+                onClick={() => setView('plan')}
                 className={cn(
                   "p-2 -mr-1 transition-colors",
-                  view === 'planner' ? "text-accent" : "text-subtle/40 hover:text-accent"
+                  view === 'plan' ? "text-accent" : "text-subtle/40 hover:text-accent"
                 )}
               >
-                <ShoppingCart size={18} />
+                <Calendar size={18} />
               </button>
               <button 
                 onClick={() => setView(view === 'timeline' ? 'database' : 'timeline')}
@@ -810,8 +809,8 @@ export default function App() {
             meals={statsMeals}
             foods={foods}
           />
-        ) : view === 'planner' ? (
-          <WeeklyPlannerView foods={foods} user={user!} />
+        ) : view === 'plan' ? (
+          <PlanView foods={foods} user={user!} />
         ) : view === 'timeline' ? (
           <>
             {/* === MOBILE: Chronological list === */}

@@ -75,6 +75,45 @@ export interface PlannedItem {
   quantityGrams: number;
 }
 
+export type PlannedMealSlot = 'breakfast' | 'lunch' | 'dinner' | 'snack' | 'other';
+
+export interface PlannedMealItem {
+  id: string;
+  planned_meal_id: string;
+  food_id: string | null;
+  custom_name: string | null;
+  grams: number;
+  calories: number | null;
+  protein: number | null;
+  carbs: number | null;
+  fat: number | null;
+  sugar: number | null;
+  saturated_fat: number | null;
+  total_fiber: number | null;
+  soluble_fiber: number | null;
+  insoluble_fiber: number | null;
+  gi: number | null;
+  gl: number | null;
+  is_vegetable: boolean | null;
+  is_fruit: boolean | null;
+  is_plant_based: boolean | null;
+  food_group: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PlannedMeal {
+  id: string;
+  user_id: string;
+  planned_date: string;
+  meal_type: PlannedMealSlot;
+  name: string | null;
+  time: string | null;
+  created_at?: string;
+  updated_at?: string;
+  planned_meal_items: PlannedMealItem[];
+}
+
 export interface WeeklyPlan {
   id?: string;
   user_id: string;
