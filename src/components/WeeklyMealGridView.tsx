@@ -25,7 +25,13 @@ export interface GridMealItem {
   protein?: number;
   carbs?: number;
   fat?: number;
+  sugar?: number;
+  saturated_fat?: number;
   fiber?: number;
+  total_fiber?: number;
+  soluble_fiber?: number;
+  insoluble_fiber?: number;
+  gi?: number;
 }
 
 export interface GridMeal {
@@ -231,7 +237,7 @@ export default function WeeklyMealPlannerView({ foods, user }: WeeklyMealPlanner
           pro += (item.protein || 0) * factor;
           car += (item.carbs || 0) * factor;
           fat += (item.fat || 0) * factor;
-          fib += (item.fiber || 0) * factor;
+          fib += ((item.total_fiber ?? item.fiber) || 0) * factor;
         } else if (item.foodId) {
           const f = getFoodOrUnknown(foods, item.foodId);
           cal += f.calories * factor;
@@ -261,7 +267,7 @@ export default function WeeklyMealPlannerView({ foods, user }: WeeklyMealPlanner
         <div className="flex-1 space-y-2">
           {meal.items.map((item, iIndex) => {
             const f = item.is_custom 
-              ? { name_hu: item.name, calories: item.calories, protein: item.protein, carbs: item.carbs, fat: item.fat, total_fiber: item.fiber || 0 }
+              ? { name_hu: item.name, calories: item.calories, protein: item.protein, carbs: item.carbs, fat: item.fat, sugar: item.sugar, saturated_fat: item.saturated_fat, total_fiber: item.total_fiber ?? item.fiber ?? 0, soluble_fiber: item.soluble_fiber ?? 0, insoluble_fiber: item.insoluble_fiber ?? 0, gi: item.gi }
               : getFoodOrUnknown(foods, item.foodId || '');
             
             return (
@@ -316,7 +322,7 @@ export default function WeeklyMealPlannerView({ foods, user }: WeeklyMealPlanner
                   className="w-full text-left p-2 hover:bg-gray-50 rounded-lg flex flex-col"
                 >
                   <span className="text-xs font-medium">{f.name_hu}</span>
-                  <span className="text-[10px] text-gray-400">{f.calories} kcal / 100g</span>
+                  <span className="text-[10px] text-gray-400">{f.calories} kcal / 100g • {Math.round(f.sugar ?? 0)}g sugar • {Math.round(f.saturated_fat ?? 0)}g sat fat</span>
                 </button>
               ))}
             </div>

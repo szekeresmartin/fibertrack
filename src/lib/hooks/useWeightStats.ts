@@ -1,27 +1,23 @@
 import { useMemo } from 'react';
-import { format } from 'date-fns';
 import { WeightLog } from '../weightUtils';
 import { Meal, Food } from '../../types';
 import { calculateWeightStats } from '../services/weightStatsService';
-import { calculateMealTotals, getFoodOrUnknown } from '../utils';
+import { buildCalendarDailySeries, buildDailyNutritionMap } from '../statsUtils';
+import { startOfDay, subDays } from 'date-fns';
 
-export function useWeightStats(weightLogs: WeightLog[], meals: Meal[], foods: Food[]) {
+export function useWeightStats(weightLogs: WeightLog[], meals: Meal[], foods: Food[], days: number = 30) {
   return useMemo(() => {
-    // Group calories by day for TDEE calculation
-    const dailyCalsMap: Record<string, number> = {};
-    meals.forEach(meal => {
-      const mealDateStr = format(new Date(meal.created_at || ''), 'yyyy-MM-dd');
-      const mealItems = (meal.items || []).map(item => ({
-        food: getFoodOrUnknown(foods, item.foodId || ''),
-        quantity: item.quantityGrams,
-        customMacros: item
-      }));
-      const totals = calculateMealTotals(mealItems);
-      dailyCalsMap[mealDateStr] = (dailyCalsMap[mealDateStr] || 0) + totals.calories;
-    });
+    const dayGroups = buildDailyNutritionMap(meals, foods);
+    const end = startOfDay(new Date());
+    const start = subDays(end, Math.max(days - 1, 0));
+    const calendarDays = buildCalendarDailySeries(start, end, dayGroups);
 
-    const dailyCalories = Object.entries(dailyCalsMap).map(([date, calories]) => ({ date, calories }));
+    const dailyCalories = calendarDays.map(day => ({
+      date: day.date,
+      calories: day.metrics.calories,
+      hasMeals: day.hasMeals
+    }));
 
-    return calculateWeightStats(weightLogs, dailyCalories);
-  }, [weightLogs, meals, foods]);
+    return calculateWeightStats(weightLogs, dailyCalories, days);
+  }, [weightLogs, meals, foods, days]);
 }

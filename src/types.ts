@@ -6,14 +6,22 @@ export interface Food {
   carbs: number;
   protein: number;
   fat: number;
+  sugar?: number | null;
+  saturated_fat?: number | null;
   soluble_fiber: number;
   insoluble_fiber: number;
   total_fiber: number;
+  sugar_source?: string | null;
+  saturated_fat_source?: string | null;
   gi?: number;
   brand?: string;
   source: 'sheets' | 'local';
   isDeleted?: boolean;
   category?: 'vegetable' | 'other';
+  is_vegetable?: boolean;
+  is_fruit?: boolean;
+  is_plant_based?: boolean;
+  food_group?: string | null;
 }
 
 export interface MealItem {
@@ -25,9 +33,19 @@ export interface MealItem {
   protein?: number;
   carbs?: number;
   fat?: number;
+  sugar?: number | null;
+  saturated_fat?: number | null;
   is_custom?: boolean;
   joinedFood?: Food | null;
+  is_vegetable?: boolean;
+  is_fruit?: boolean;
+  is_plant_based?: boolean;
+  food_group?: string | null;
   fiber?: number;
+  total_fiber?: number;
+  soluble_fiber?: number;
+  insoluble_fiber?: number;
+  gi?: number;
 }
 
 export interface Meal {
@@ -43,6 +61,8 @@ export interface DailyTotals {
   carbs: number;
   protein: number;
   fat: number;
+  sugar: number;
+  saturated_fat: number;
   soluble_fiber: number;
   insoluble_fiber: number;
   total_fiber: number;
@@ -53,6 +73,45 @@ export interface PlannedItem {
   id: string;
   foodId: string;
   quantityGrams: number;
+}
+
+export type PlannedMealSlot = 'breakfast' | 'lunch' | 'dinner' | 'snack' | 'other';
+
+export interface PlannedMealItem {
+  id: string;
+  planned_meal_id: string;
+  food_id: string | null;
+  custom_name: string | null;
+  grams: number;
+  calories: number | null;
+  protein: number | null;
+  carbs: number | null;
+  fat: number | null;
+  sugar: number | null;
+  saturated_fat: number | null;
+  total_fiber: number | null;
+  soluble_fiber: number | null;
+  insoluble_fiber: number | null;
+  gi: number | null;
+  gl: number | null;
+  is_vegetable: boolean | null;
+  is_fruit: boolean | null;
+  is_plant_based: boolean | null;
+  food_group: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PlannedMeal {
+  id: string;
+  user_id: string;
+  planned_date: string;
+  meal_type: PlannedMealSlot;
+  name: string | null;
+  time: string | null;
+  created_at?: string;
+  updated_at?: string;
+  planned_meal_items: PlannedMealItem[];
 }
 
 export interface WeeklyPlan {

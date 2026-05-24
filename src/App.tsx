@@ -27,22 +27,23 @@ import {
   Calendar,
   Copy,
   BarChart2,
-  ShoppingCart,
   Scale
 } from 'lucide-react';
-import { Food, Meal, DailyTotals, MealItem } from './types';
+import { Food, Meal, DailyTotals } from './types';
 import { fetchFoodsFromSheets } from './lib/googleSheets';
 import { cn, calculateMealTotals, getFriendlyErrorMessage, getGlycemicLoadLabel, getFoodOrUnknown } from './lib/utils';
 import StatisticsView from './components/StatisticsView';
-import WeeklyPlannerView from './components/WeeklyPlannerView';
+import PlanView from './components/PlanView';
 import WeightView from './components/WeightView';
 import { downloadDayAsCSV, generateDaySummaryText } from './lib/exportUtils';
+import { buildMealItemWritePayloads, buildMealWritePayload, mapMealRecord } from './lib/mealItemUtils';
 import { format, addDays, isSameDay, isToday, startOfToday, subDays, parseISO, differenceInDays } from 'date-fns';
 import { computeStats, ProcessedStats } from './lib/statsUtils';
 import UnifiedExportModal from './components/UnifiedExportModal';
 import DatePickerModal from './components/DatePickerModal';
 import { supabase } from './lib/supabase';
 import { User } from '@supabase/supabase-js';
+import { getLocalDayBounds } from './lib/dateUtils';
 
 // No mock authentication, fully relying on Supabase state.
 
@@ -112,6 +113,17 @@ function DayStrip({ selectedDate, onSelect, onOpenPicker }: DayStripProps) {
 }
 // --------------------------------------
 
+function isStaleSupabaseSessionError(error: unknown): boolean {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'object' && error !== null && 'message' in error
+      ? String((error as { message?: unknown }).message ?? '')
+      : String(error ?? '');
+
+  const normalized = message.toLowerCase();
+  return normalized.includes('invalid refresh token') && normalized.includes('refresh token not found');
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
@@ -120,9 +132,9 @@ export default function App() {
   const [sheetUrl, setSheetUrl] = useState<string>(() => {
     return localStorage.getItem('fiber_track_sheet_url') || '';
   });
-  const [view, setView] = useState<'timeline' | 'database' | 'statistics' | 'planner' | 'weight'>('timeline');
+  const [view, setView] = useState<'timeline' | 'database' | 'statistics' | 'plan' | 'weight'>('timeline');
   const [statsMeals, setStatsMeals] = useState<Meal[]>([]);
-  const [statsDays, setStatsDays] = useState<7 | 30 | 90>(7);
+  const [statsDays, setStatsDays] = useState<7 | 30 | 90 | 3650>(7);
   const [isStatsLoading, setIsStatsLoading] = useState(false);
   const [isMealModalOpen, setIsMealModalOpen] = useState(false);
   const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
@@ -154,10 +166,39 @@ export default function App() {
   // Root-level Auth Handler
   // --------------------------------------
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      setSessionLoading(false);
-    });
+    let cancelled = false;
+
+    const restoreSession = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+
+        if (cancelled) return;
+
+        if (error) {
+          if (isStaleSupabaseSessionError(error)) {
+            void supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
+            if (!cancelled) {
+              setUser(null);
+            }
+          } else {
+            console.error('Error restoring Supabase session:', error);
+          }
+        } else {
+          setUser(session?.user ?? null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Unexpected Supabase session error:', error);
+          setUser(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setSessionLoading(false);
+        }
+      }
+    };
+
+    restoreSession();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'PASSWORD_RECOVERY') {
@@ -168,6 +209,7 @@ export default function App() {
     });
 
     return () => {
+      cancelled = true;
       subscription.unsubscribe();
     };
   }, []);
@@ -177,27 +219,13 @@ export default function App() {
     if (!user) return;
 
     const fetchMeals = async () => {
-      const startOfDay = new Date(selectedDate);
-      startOfDay.setHours(0, 0, 0, 0);
-
-      const endOfDay = new Date(selectedDate);
-      endOfDay.setHours(23, 59, 59, 999);
+      const { start: startOfDay, end: endOfDay } = getLocalDayBounds(selectedDate);
 
       const { data, error } = await supabase
         .from('meals')
         .select(`
           *,
-          meal_items (
-            food_id,
-            grams,
-            is_custom,
-            name,
-            calories,
-            protein,
-            carbs,
-            fat,
-            fiber
-          )
+          meal_items (*, food:foods(*))
         `)
         .eq('user_id', user.id)
         .gte('created_at', startOfDay.toISOString())
@@ -206,21 +234,7 @@ export default function App() {
       if (error) {
         console.error('Error fetching meals:', error);
       } else if (data) {
-        const mappedMeals = data.map((meal: any) => ({
-          ...meal,
-          items: (meal.meal_items || []).map((mi: any) => ({
-            foodId: mi.food_id,
-            quantityGrams: mi.grams,
-            is_custom: mi.is_custom || (mi.food_id === null),
-            name: mi.name,
-            calories: mi.calories,
-            protein: mi.protein,
-            carbs: mi.carbs,
-            fat: mi.fat,
-            fiber: mi.fiber
-          }))
-        }));
-        setMeals(mappedMeals);
+        setMeals(data.map((meal: any) => mapMealRecord(meal)));
       } else {
         setMeals([]);
       }
@@ -236,34 +250,26 @@ export default function App() {
     const fetchStatsData = async () => {
       setIsStatsLoading(true);
       const endDate = new Date();
-      const startDate = new Date();
-      startDate.setDate(endDate.getDate() - statsDays);
+      const fetchDays = view === 'weight' ? 180 : (statsDays === 3650 ? 3650 : statsDays * 2);
+      const startDate = subDays(endDate, fetchDays - 1);
+      const { end: endBoundary } = getLocalDayBounds(endDate);
+      const { start: startOfRange } = getLocalDayBounds(startDate);
 
       const { data, error } = await supabase
         .from('meals')
         .select(`
           *,
-          meal_items (
-            food_id,
-            grams
-          )
+          meal_items (*, food:foods(*))
         `)
         .eq('user_id', user.id)
-        .gte('created_at', startDate.toISOString())
-        .lte('created_at', endDate.toISOString());
+        .gte('created_at', startOfRange.toISOString())
+        .lte('created_at', endBoundary.toISOString());
 
       if (error) {
         console.error('Error fetching stats meals:', error);
         showToast('Failed to load statistics', 'error');
       } else if (data) {
-        const mappedMeals = data.map((meal: any) => ({
-          ...meal,
-          items: (meal.meal_items || []).map((mi: any) => ({
-            foodId: mi.food_id,
-            quantityGrams: mi.grams
-          }))
-        }));
-        setStatsMeals(mappedMeals);
+        setStatsMeals(data.map((meal: any) => mapMealRecord(meal)));
       }
       setIsStatsLoading(false);
     };
@@ -374,19 +380,13 @@ export default function App() {
   const handleSaveMeal = async (meal: Partial<Meal>) => {
     if (!user) throw new Error("User not authenticated.");
 
-    const mealPayload: any = {
-      name: meal.name,
-      time: meal.time,
-      user_id: user.id
-    };
+    let mealPayload = buildMealWritePayload(meal, user.id);
 
-    if (meal.id) {
-      mealPayload.id = meal.id;
-    } else {
+    if (!meal.id) {
       const mealDate = new Date(selectedDate);
       const [hours, minutes] = meal.time.split(':');
       mealDate.setHours(Number(hours), Number(minutes), 0, 0);
-      mealPayload.created_at = mealDate.toISOString();
+      mealPayload = buildMealWritePayload(meal, user.id, mealDate.toISOString());
     }
 
     const { data: insertedMeal, error } = await supabase
@@ -406,18 +406,7 @@ export default function App() {
         await supabase.from('meal_items').delete().eq('meal_id', meal.id);
       }
       
-      const itemsToInsert = meal.items?.map(item => ({
-        meal_id: insertedMeal.id,
-        food_id: item.is_custom ? null : item.foodId,
-        grams: item.quantityGrams,
-        name: item.is_custom ? item.name : null,
-        calories: item.is_custom ? item.calories : null,
-        protein: item.is_custom ? item.protein : null,
-        carbs: item.is_custom ? item.carbs : null,
-        fat: item.is_custom ? item.fat : null,
-        fiber: item.is_custom ? (item.fiber || 0) : null,
-        is_custom: !!item.is_custom
-      })) || [];
+      const itemsToInsert = buildMealItemWritePayloads(insertedMeal.id, meal.items, foods);
 
       const { error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert);
       if (itemsError) {
@@ -449,13 +438,12 @@ export default function App() {
     
     // Combine date and time in ISO format to avoid timezone issues
     const targetDate = new Date(`${targetDateStr}T${targetTime}`);
-    
-    const mealPayload = {
-      name: meal.name,
-      time: targetTime,
-      created_at: targetDate.toISOString(),
-      user_id: user.id
-    };
+
+    const mealPayload = buildMealWritePayload(
+      { ...meal, time: targetTime },
+      user.id,
+      targetDate.toISOString()
+    );
 
     const { data: insertedMeal, error: mealError } = await supabase
       .from('meals')
@@ -469,18 +457,7 @@ export default function App() {
     }
 
     if (meal.items && meal.items.length > 0) {
-      const itemsToInsert = meal.items.map(item => ({
-        meal_id: insertedMeal.id,
-        food_id: item.is_custom ? null : item.foodId,
-        grams: item.quantityGrams,
-        is_custom: !!item.is_custom,
-        name: item.is_custom ? item.name : null,
-        calories: item.is_custom ? item.calories : null,
-        protein: item.is_custom ? item.protein : null,
-        carbs: item.is_custom ? item.carbs : null,
-        fat: item.is_custom ? item.fat : null,
-        fiber: item.is_custom ? ((item as any).fiber || 0) : null
-      }));
+      const itemsToInsert = buildMealItemWritePayloads(insertedMeal.id, meal.items, foods);
 
       const { error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert);
       
@@ -504,15 +481,14 @@ export default function App() {
     if (meals.length === 0) { showToast('No meals to duplicate today', 'error'); return; }
 
     // Check for existing meals on target date
-    const startOfTarget = `${targetDateStr}T00:00:00.000Z`;
-    const endOfTarget = `${targetDateStr}T23:59:59.999Z`;
+    const { start: startOfTarget, end: endOfTarget } = getLocalDayBounds(targetDateStr);
     
     const { data: existingMeals, error: checkError } = await supabase
       .from('meals')
       .select('id')
       .eq('user_id', user.id)
-      .gte('created_at', startOfTarget)
-      .lte('created_at', endOfTarget);
+      .gte('created_at', startOfTarget.toISOString())
+      .lte('created_at', endOfTarget.toISOString());
 
     if (checkError) {
       console.error('Error checking meals:', checkError);
@@ -539,7 +515,7 @@ export default function App() {
 
     const mealsToInsert = meals.map(meal => {
       const mealTime = keepOriginalTimes ? meal.time : '12:00';
-      return { name: meal.name, time: mealTime, user_id: user.id, created_at: `${targetDateStr}T${mealTime}` };
+      return buildMealWritePayload(meal, user.id, `${targetDateStr}T${mealTime}`);
     });
 
     const { data: insertedMeals, error: mealError } = await supabase.from('meals').insert(mealsToInsert).select();
@@ -548,20 +524,7 @@ export default function App() {
     const itemsToInsert: any[] = [];
     insertedMeals.forEach((newMeal: any, index: number) => {
       const originalMeal = meals[index];
-      (originalMeal.items || []).forEach(item => {
-        itemsToInsert.push({ 
-          meal_id: newMeal.id, 
-          food_id: item.is_custom ? null : item.foodId, 
-          grams: item.quantityGrams,
-          is_custom: !!item.is_custom,
-          name: item.is_custom ? item.name : null,
-          calories: item.is_custom ? item.calories : null,
-          protein: item.is_custom ? item.protein : null,
-          carbs: item.is_custom ? item.carbs : null,
-          fat: item.is_custom ? item.fat : null,
-          fiber: item.is_custom ? ((item as any).fiber || 0) : null
-        });
-      });
+      itemsToInsert.push(...buildMealItemWritePayloads(newMeal.id, originalMeal.items || [], foods));
     });
 
     if (itemsToInsert.length > 0) {
@@ -710,9 +673,9 @@ export default function App() {
             <BarChart2 size={16} />
             Statistics
           </button>
-          <button onClick={() => setView('planner')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'planner' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
-            <ShoppingCart size={16} />
-            Meal Planner
+          <button onClick={() => setView('plan')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'plan' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
+            <Calendar size={16} />
+            Plan
           </button>
           <button onClick={() => setView('weight')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'weight' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
             <Scale size={16} />
@@ -788,13 +751,13 @@ export default function App() {
                 <BarChart2 size={18} />
               </button>
               <button 
-                onClick={() => setView('planner')}
+                onClick={() => setView('plan')}
                 className={cn(
                   "p-2 -mr-1 transition-colors",
-                  view === 'planner' ? "text-accent" : "text-subtle/40 hover:text-accent"
+                  view === 'plan' ? "text-accent" : "text-subtle/40 hover:text-accent"
                 )}
               >
-                <ShoppingCart size={18} />
+                <Calendar size={18} />
               </button>
               <button 
                 onClick={() => setView(view === 'timeline' ? 'database' : 'timeline')}
@@ -846,8 +809,8 @@ export default function App() {
             meals={statsMeals}
             foods={foods}
           />
-        ) : view === 'planner' ? (
-          <WeeklyPlannerView foods={foods} user={user!} />
+        ) : view === 'plan' ? (
+          <PlanView foods={foods} user={user!} />
         ) : view === 'timeline' ? (
           <>
             {/* === MOBILE: Chronological list === */}
@@ -2018,7 +1981,12 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
     protein: '',
     carbs: '',
     fat: '',
-    fiber: '',
+    sugar: '',
+    saturatedFat: '',
+    totalFiber: '',
+    solubleFiber: '',
+    insolubleFiber: '',
+    gi: '',
     isTotal: true
   });
   const quantityRefs = useRef<(HTMLInputElement | null)[]>([]);
@@ -2148,7 +2116,7 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
   };
 
   const handleAddManual = () => {
-    const { name, grams, calories, protein, carbs, fat, fiber, isTotal } = manualForm;
+    const { name, grams, calories, protein, carbs, fat, sugar, saturatedFat, totalFiber, solubleFiber, insolubleFiber, gi, isTotal } = manualForm;
     if (!name || !calories || !protein || !carbs || !fat || !grams) {
       setErrorMsg("Please fill in name, grams, and all core macro fields.");
       return;
@@ -2160,25 +2128,71 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
       return;
     }
 
-    // Scaling factor: if entering total values, we convert them to per-100g
-    // If entering per-100g, we keep them as is.
-    // calculateMealTotals expects per-100g macros and multiplies by (quantity / 100).
+    const parseField = (value: string) => {
+      if (value.trim() === '') return null;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const caloriesValue = Number(calories);
+    const proteinValue = Number(protein);
+    const carbsValue = Number(carbs);
+    const fatValue = Number(fat);
+    if ([caloriesValue, proteinValue, carbsValue, fatValue].some(value => !Number.isFinite(value) || value < 0)) {
+      setErrorMsg("Core macro fields must be 0 or greater.");
+      return;
+    }
+
+    const providedTotalFiber = parseField(totalFiber);
+    const providedSolubleFiber = parseField(solubleFiber);
+    const providedInsolubleFiber = parseField(insolubleFiber);
+    const providedSugar = parseField(sugar);
+    const providedSaturatedFat = parseField(saturatedFat);
+    const giValue = parseField(gi);
+
+    if ([providedTotalFiber, providedSolubleFiber, providedInsolubleFiber, providedSugar, providedSaturatedFat, giValue].some(value => value !== null && value < 0)) {
+      setErrorMsg("Fiber, sugar, saturated fat, and GI values must be 0 or greater.");
+      return;
+    }
+
+    const hasSplitPair = providedSolubleFiber !== null && providedInsolubleFiber !== null;
+    const derivedTotalFiber = providedTotalFiber !== null
+      ? providedTotalFiber
+      : hasSplitPair
+        ? providedSolubleFiber + providedInsolubleFiber
+        : null;
+
+    if (providedTotalFiber === null && !hasSplitPair) {
+      setErrorMsg("Enter total fiber or both soluble and insoluble fiber.");
+      return;
+    }
+
     const scale = isTotal ? (100 / qty) : 1;
-    
+    const totalFiberPer100g = derivedTotalFiber !== null ? derivedTotalFiber * scale : null;
+    const solubleFiberPer100g = providedSolubleFiber !== null ? providedSolubleFiber * scale : null;
+    const insolubleFiberPer100g = providedInsolubleFiber !== null ? providedInsolubleFiber * scale : null;
+    const sugarPer100g = providedSugar !== null ? providedSugar * scale : null;
+    const saturatedFatPer100g = providedSaturatedFat !== null ? providedSaturatedFat * scale : null;
     const newItem = {
       foodId: null,
       quantityGrams: qty,
       name: name,
-      calories: Number(calories) * scale,
-      protein: Number(protein) * scale,
-      carbs: Number(carbs) * scale,
-      fat: Number(fat) * scale,
-      fiber: Number(fiber || 0) * scale,
+      calories: caloriesValue * scale,
+      protein: proteinValue * scale,
+      carbs: carbsValue * scale,
+      fat: fatValue * scale,
+      sugar: sugarPer100g ?? undefined,
+      saturated_fat: saturatedFatPer100g ?? undefined,
+      fiber: totalFiberPer100g ?? 0,
+      total_fiber: totalFiberPer100g ?? undefined,
+      soluble_fiber: solubleFiberPer100g ?? undefined,
+      insoluble_fiber: insolubleFiberPer100g ?? undefined,
+      gi: giValue ?? undefined,
       is_custom: true
     };
     
     setItems(prev => [...prev, newItem]);
-    setManualForm({ name: '', grams: '100', calories: '', protein: '', carbs: '', fat: '', fiber: '', isTotal: true });
+    setManualForm({ name: '', grams: '100', calories: '', protein: '', carbs: '', fat: '', sugar: '', saturatedFat: '', totalFiber: '', solubleFiber: '', insolubleFiber: '', gi: '', isTotal: true });
     setIsManualMode(false);
     setErrorMsg(null);
   };
@@ -2191,6 +2205,19 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
     }));
     return calculateMealTotals(mealItems);
   }, [items, foods]);
+
+  const hasIncompleteFiberSplitSummary = items.some(item => {
+    if (item.is_custom) {
+      const totalFiber = item.total_fiber ?? item.fiber ?? 0;
+      if (totalFiber <= 0) return false;
+      return item.soluble_fiber == null || item.insoluble_fiber == null || ((item.soluble_fiber ?? 0) + (item.insoluble_fiber ?? 0) === 0);
+    }
+
+    if (!item.foodId) return false;
+    const food = getFoodOrUnknown(foods, item.foodId);
+    return food.total_fiber > 0 && (food.soluble_fiber + food.insoluble_fiber === 0);
+  });
+  const hasKnownFiberSplitSummary = mealTotals.total_fiber > 0 && !hasIncompleteFiberSplitSummary && (mealTotals.soluble_fiber + mealTotals.insoluble_fiber) > 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
@@ -2292,6 +2319,8 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                             <span className="bg-gray-100 px-2 py-0.5 rounded text-ink">{Math.round(food.calories)} kcal • {Math.round(food.protein)}P {Math.round(food.carbs)}C {Math.round(food.fat)}F <span className="font-normal opacity-70">/ 100g</span></span>
                             <div className="flex gap-2">
                               <span className="bg-gray-50 px-2 py-0.5 rounded">{food.total_fiber}g fiber <span className="font-normal opacity-70">/ 100g</span></span>
+                              <span className="bg-gray-50 px-2 py-0.5 rounded">{Math.round(food.sugar ?? 0)}g sugar <span className="font-normal opacity-70">/ 100g</span></span>
+                              <span className="bg-gray-50 px-2 py-0.5 rounded">{Math.round(food.saturated_fat ?? 0)}g sat fat <span className="font-normal opacity-70">/ 100g</span></span>
                               {food.gi != null && food.carbs != null && (
                                 <span className="bg-accent/5 text-accent px-2 py-0.5 rounded">GL: {Math.round((food.gi * food.carbs * 100) / 10000)} <span className="font-normal opacity-70">/ 100g</span></span>
                               )}
@@ -2329,7 +2358,7 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Kcal</label>
                       <input type="number" value={manualForm.calories} onChange={e => setManualForm({...manualForm, calories: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
@@ -2347,8 +2376,28 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                       <input type="number" value={manualForm.fat} onChange={e => setManualForm({...manualForm, fat: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-green-600 uppercase tracking-widest">Fiber</label>
-                      <input type="number" value={manualForm.fiber} onChange={e => setManualForm({...manualForm, fiber: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Sugar</label>
+                      <input type="number" value={manualForm.sugar} onChange={e => setManualForm({...manualForm, sugar: e.target.value})} placeholder="optional" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Sat Fat</label>
+                      <input type="number" value={manualForm.saturatedFat} onChange={e => setManualForm({...manualForm, saturatedFat: e.target.value})} placeholder="optional" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Total Fiber</label>
+                      <input type="number" value={manualForm.totalFiber} onChange={e => setManualForm({...manualForm, totalFiber: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">Soluble</label>
+                      <input type="number" value={manualForm.solubleFiber} onChange={e => setManualForm({...manualForm, solubleFiber: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-amber-600 uppercase tracking-widest">Insoluble</label>
+                      <input type="number" value={manualForm.insolubleFiber} onChange={e => setManualForm({...manualForm, insolubleFiber: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">GI</label>
+                      <input type="number" value={manualForm.gi} onChange={e => setManualForm({...manualForm, gi: e.target.value})} placeholder="0" className="w-full px-3 py-2 bg-white rounded-xl border border-gray-200 focus:ring-2 focus:ring-accent transition-all text-sm" />
                     </div>
                   </div>
                   
@@ -2362,7 +2411,19 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
 
             <div className="space-y-3">
               {items.map((item, i) => {
-                const food = item.is_custom ? { name_hu: item.name, calories: item.calories, protein: item.protein, carbs: item.carbs, fat: item.fat, total_fiber: item.fiber || 0 } as any as Food : getFoodOrUnknown(foods, item.foodId);
+                const food = item.is_custom ? {
+                  name_hu: item.name,
+                  calories: item.calories,
+                  protein: item.protein,
+                  carbs: item.carbs,
+                  fat: item.fat,
+                  sugar: item.sugar,
+                  saturated_fat: item.saturated_fat,
+                  total_fiber: item.total_fiber ?? item.fiber ?? 0,
+                  soluble_fiber: item.soluble_fiber ?? 0,
+                  insoluble_fiber: item.insoluble_fiber ?? 0,
+                  gi: item.gi,
+                } as any as Food : getFoodOrUnknown(foods, item.foodId);
                 return (
                   <div key={i} className="flex items-center gap-3 bg-gray-50/80 p-3 rounded-xl border border-transparent hover:border-gray-200 hover:shadow-sm hover:bg-white transition-all group">
                     <div>
@@ -2373,11 +2434,11 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                         {food.gi != null && <span className={cn("ml-2 font-bold", food.gi < 56 ? "text-green-600" : food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {food.gi})</span>}
                       </div>
                       <div className="text-xs text-gray-400 font-medium mt-0.5">
-                        {Math.round((food.calories * (Number(item.quantityGrams) || 0)) / 100)} kcal • {Math.round((food.protein * (Number(item.quantityGrams) || 0)) / 100)}P {Math.round((food.carbs * (Number(item.quantityGrams) || 0)) / 100)}C {Math.round((food.fat * (Number(item.quantityGrams) || 0)) / 100)}F
+                        {Math.round((food.calories * (Number(item.quantityGrams) || 0)) / 100)} kcal • {Math.round((food.protein * (Number(item.quantityGrams) || 0)) / 100)}P {Math.round((food.carbs * (Number(item.quantityGrams) || 0)) / 100)}C {Math.round((food.fat * (Number(item.quantityGrams) || 0)) / 100)}F • {Math.round((food.sugar ?? 0) * (Number(item.quantityGrams) || 0) / 100)}g sugar • {Math.round((food.saturated_fat ?? 0) * (Number(item.quantityGrams) || 0) / 100)}g sat fat
                       </div>
                       <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">
                         <span className="text-green-600">{(food.total_fiber * Number(item.quantityGrams) / 100).toFixed(1)}g</span> Fiber
-                        {food.gi != null && !item.is_custom && (
+                        {food.gi != null && (
                           <span className="ml-2 text-accent">GL: {Math.round((food.gi * food.carbs * Number(item.quantityGrams)) / 10000)}</span>
                         )}
                       </div>
@@ -2414,14 +2475,34 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
             </div>
           )}
           <div className="flex justify-between items-center">
-            <div className="flex gap-4 items-center">
+            <div className="flex flex-wrap gap-4 items-center">
               <div className="text-center">
                 <div className="text-lg font-bold text-green-600">{mealTotals.total_fiber.toFixed(1)}g</div>
-                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fiber</div>
+                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Total Fiber</div>
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold text-blue-600">
+                  {hasKnownFiberSplitSummary ? `${mealTotals.soluble_fiber.toFixed(1)}g` : '—'}
+                </div>
+                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Soluble</div>
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold text-amber-600">
+                  {hasKnownFiberSplitSummary ? `${mealTotals.insoluble_fiber.toFixed(1)}g` : '—'}
+                </div>
+                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Insoluble</div>
               </div>
               <div className="text-center">
                 <div className="text-lg font-bold text-accent">{Math.round(mealTotals.gl)}</div>
                 <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">GL</div>
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold text-pink-600">{mealTotals.sugar.toFixed(1)}g</div>
+                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Sugar</div>
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold text-slate-600">{mealTotals.saturated_fat.toFixed(1)}g</div>
+                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Sat Fat</div>
               </div>
               <div className="h-8 w-px bg-gray-200 mx-1" />
               <div className="text-[11px] text-subtle leading-tight">
@@ -2456,7 +2537,7 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
   const [search, setSearch] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   const [newFood, setNewFood] = useState<Omit<Food, 'id' | 'source'>>({
-    name_hu: '', name_en: '', brand: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gi: undefined
+    name_hu: '', name_en: '', brand: '', calories: 0, carbs: 0, protein: 0, fat: 0, sugar: 0, saturated_fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gi: undefined
   });
 
   const filteredFoods = foods.filter(f => {
@@ -2479,7 +2560,7 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
     localStorage.setItem('fiber_track_local_foods', JSON.stringify(local));
 
     setIsAdding(false);
-    setNewFood({ name_hu: '', name_en: '', brand: '', calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gi: undefined });
+    setNewFood({ name_hu: '', name_en: '', brand: '', calories: 0, carbs: 0, protein: 0, fat: 0, sugar: 0, saturated_fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gi: undefined });
   };
 
   const handleDeleteFood = (id: string) => {
@@ -2631,6 +2712,16 @@ function FoodDatabase({ foods, setFoods, sheetUrl, setSheetUrl, isLoading }: Foo
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fat</label>
                     <input type="number" value={newFood.fat} onChange={e => setNewFood({ ...newFood, fat: Number(e.target.value) })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Sugar</label>
+                    <input type="number" value={newFood.sugar} onChange={e => setNewFood({ ...newFood, sugar: Number(e.target.value) })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Saturated Fat</label>
+                    <input type="number" value={newFood.saturated_fat} onChange={e => setNewFood({ ...newFood, saturated_fat: Number(e.target.value) })} className="w-full px-4 py-2 bg-gray-50 rounded-xl border-none focus:ring-2 focus:ring-green-500" />
                   </div>
                 </div>
                 <div className="space-y-1">

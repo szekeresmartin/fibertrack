@@ -44,6 +44,40 @@ export function calculateItemGL(food: Food, quantity: number): number {
   return (gi * carbs * quantity) / 10000;
 }
 
+export function isConservativeVegetable(food: Food): boolean {
+  if (!food) return false;
+  if (food.is_vegetable === true) return true;
+  if (food.is_vegetable === false) return false;
+  if (food.category !== 'vegetable') return false;
+
+  const text = `${food.name_hu || ''} ${food.name_en || ''} ${food.brand || ''}`.toLowerCase();
+  const obviousFalsePositives = [
+    'bread',
+    'pizza',
+    'pasta',
+    'rice',
+    'pastry',
+    'pastries',
+    'cake',
+    'cookie',
+    'snack',
+    'chips',
+    'crisps',
+    'sauce',
+    'soup',
+    'mixed',
+    'processed',
+    'sandwich',
+    'wrap',
+    'burger',
+    'ketchup',
+    'mayo',
+    'mayonnaise'
+  ];
+
+  return !obviousFalsePositives.some(term => text.includes(term));
+}
+
 export function calculateMealTotals(items: { food?: Food; quantity: number; customMacros?: Partial<MealItem> }[]) {
   return items.reduce(
     (acc, item) => {
@@ -51,15 +85,24 @@ export function calculateMealTotals(items: { food?: Food; quantity: number; cust
       
       // Prioritize custom macros if available (Quick Add)
       if (item.customMacros?.is_custom) {
+        const totalFiber = item.customMacros.total_fiber ?? item.customMacros.fiber ?? 0;
+        const solubleFiber = item.customMacros.soluble_fiber ?? 0;
+        const insolubleFiber = item.customMacros.insoluble_fiber ?? 0;
+        const sugar = item.customMacros.sugar ?? 0;
+        const saturatedFat = item.customMacros.saturated_fat ?? 0;
+        const gi = item.customMacros.gi ?? 0;
+        const carbs = item.customMacros.carbs || 0;
         return {
           calories: acc.calories + (item.customMacros.calories || 0) * factor,
-          carbs: acc.carbs + (item.customMacros.carbs || 0) * factor,
+          carbs: acc.carbs + carbs * factor,
           protein: acc.protein + (item.customMacros.protein || 0) * factor,
           fat: acc.fat + (item.customMacros.fat || 0) * factor,
-          soluble_fiber: acc.soluble_fiber + 0,
-          insoluble_fiber: acc.insoluble_fiber + 0,
-          total_fiber: acc.total_fiber + (item.customMacros.fiber || 0) * factor,
-          gl: acc.gl + 0, // GL requires GI and carbs
+          sugar: acc.sugar + sugar * factor,
+          saturated_fat: acc.saturated_fat + saturatedFat * factor,
+          soluble_fiber: acc.soluble_fiber + solubleFiber * factor,
+          insoluble_fiber: acc.insoluble_fiber + insolubleFiber * factor,
+          total_fiber: acc.total_fiber + totalFiber * factor,
+          gl: acc.gl + ((gi * carbs * item.quantity) / 10000),
           vegetable_grams: acc.vegetable_grams + 0,
         };
       }
@@ -78,13 +121,15 @@ export function calculateMealTotals(items: { food?: Food; quantity: number; cust
       }
       
       const itemGL = calculateItemGL(foodToUse, item.quantity);
-      const isVegetable = foodToUse.category === 'vegetable';
+      const isVegetable = isConservativeVegetable(foodToUse);
 
       return {
         calories: acc.calories + (foodToUse.calories || 0) * factor,
         carbs: acc.carbs + (foodToUse.carbs || 0) * factor,
         protein: acc.protein + (foodToUse.protein || 0) * factor,
         fat: acc.fat + (foodToUse.fat || 0) * factor,
+        sugar: acc.sugar + (foodToUse.sugar || 0) * factor,
+        saturated_fat: acc.saturated_fat + (foodToUse.saturated_fat || 0) * factor,
         soluble_fiber: acc.soluble_fiber + (foodToUse.soluble_fiber || 0) * factor,
         insoluble_fiber: acc.insoluble_fiber + (foodToUse.insoluble_fiber || 0) * factor,
         total_fiber: acc.total_fiber + (foodToUse.total_fiber || 0) * factor,
@@ -97,6 +142,8 @@ export function calculateMealTotals(items: { food?: Food; quantity: number; cust
       carbs: 0,
       protein: 0,
       fat: 0,
+      sugar: 0,
+      saturated_fat: 0,
       soluble_fiber: 0,
       insoluble_fiber: 0,
       total_fiber: 0,
@@ -111,7 +158,7 @@ export const getFoodOrUnknown = (foods: Food[], id: string): Food => {
     id,
     name_hu: 'Unknown',
     name_en: '',
-    calories: 0, carbs: 0, protein: 0, fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0,
+    calories: 0, carbs: 0, protein: 0, fat: 0, sugar: 0, saturated_fat: 0, soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0,
     gi: 0,
     source: 'local',
     isDeleted: true
