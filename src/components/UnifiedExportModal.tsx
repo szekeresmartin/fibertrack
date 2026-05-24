@@ -3,7 +3,6 @@ import { motion } from 'motion/react';
 import { 
   Calendar, Download, Loader2, Info, Copy, Check
 } from 'lucide-react';
-import { subDays } from 'date-fns';
 import { Food, Meal } from '../types';
 import { supabase } from '../lib/supabase';
 import { buildExportRows } from '../lib/statsUtils';
@@ -13,6 +12,12 @@ import { getLocalDayBounds, normalizeDateToLocal } from '../lib/dateUtils';
 import { mapMealRecord } from '../lib/mealItemUtils';
 import { buildWeightTableCsvFromInput, buildWeightTableFilename, type WeightTableExportInput } from '../lib/weightExport';
 import type { DailyWeightActivityLog } from '../lib/weightAnalytics';
+import {
+  buildExportRange,
+  inferExportRangePreset,
+  type ExportRangePreset,
+  type ExportRange,
+} from '../lib/exportRange';
 
 interface UnifiedExportModalProps {
   isOpen: boolean;
@@ -20,6 +25,8 @@ interface UnifiedExportModalProps {
   user_id: string;
   foods: Food[];
   initialRange: { start: string, end: string };
+  initialDataType?: ExportDataType;
+  initialFormat?: ExportFormat;
   showToast: (text: string, type: 'success' | 'error') => void;
 }
 
@@ -27,36 +34,28 @@ type ExportFormat = 'csv' | 'text' | 'pdf';
 type ExportDataType = 'nutrition' | 'weight';
 
 export default function UnifiedExportModal({ 
-  isOpen, onClose, user_id, foods, initialRange, showToast 
+  isOpen, onClose, user_id, foods, initialRange, initialDataType, initialFormat, showToast 
 }: UnifiedExportModalProps) {
   const today = normalizeDateToLocal(new Date());
-  const sevenDaysAgo = normalizeDateToLocal(subDays(new Date(), 6));
-  const thirtyDaysAgo = normalizeDateToLocal(subDays(new Date(), 29));
-  const getTodayRange = () => ({ start: today, end: today });
-
-  const [range, setRange] = useState(getTodayRange);
+  const [range, setRange] = useState<ExportRange>({ start: today, end: today });
   const [formatType, setFormatType] = useState<ExportFormat>('text');
   const [dataType, setDataType] = useState<ExportDataType>('nutrition');
   const [isExporting, setIsExporting] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [rangePreset, setRangePreset] = useState<ExportRangePreset>('today');
 
-  const activePreset =
-    range.start === range.end && range.start === today
-      ? 'today'
-      : range.start === sevenDaysAgo && range.end === today
-        ? 'last_7_days'
-        : range.start === thirtyDaysAgo && range.end === today
-      ? 'last_30_days'
-          : 'custom';
+  const activePreset = inferExportRangePreset(range, new Date());
 
   useEffect(() => {
     if (!isOpen) return;
-    setRange(getTodayRange());
-    setDataType('nutrition');
-    setFormatType('text');
+    const nextRange = initialRange?.start && initialRange?.end ? initialRange : buildExportRange('today');
+    setRange(nextRange);
+    setRangePreset(inferExportRangePreset(nextRange, new Date()));
+    setDataType(initialDataType ?? 'nutrition');
+    setFormatType(initialFormat ?? (initialDataType === 'weight' ? 'csv' : 'text'));
     setCopied(false);
-  }, [isOpen]);
+  }, [isOpen, initialDataType, initialFormat, initialRange]);
 
   if (!isOpen) return null;
 
@@ -69,6 +68,17 @@ export default function UnifiedExportModal({
   const handleSelectDataType = (nextDataType: ExportDataType) => {
     setDataType(nextDataType);
     setFormatType(nextDataType === 'weight' ? 'csv' : 'text');
+  };
+
+  const handleSelectPreset = (preset: ExportRangePreset) => {
+    setRangePreset(preset);
+    setRange(preset === 'custom_range' ? selectedRange : buildExportRange(preset));
+    setCopied(false);
+  };
+
+  const handleRangeInputChange = (field: 'start' | 'end', value: string) => {
+    setRangePreset('custom_range');
+    setRange(prev => ({ ...prev, [field]: value }));
   };
 
   const handleExport = async () => {
@@ -235,7 +245,7 @@ export default function UnifiedExportModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4">
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
@@ -247,14 +257,14 @@ export default function UnifiedExportModal({
         initial={{ scale: 0.9, opacity: 0, y: 20 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         exit={{ scale: 0.9, opacity: 0, y: 20 }}
-        className="relative w-full max-w-md bg-white rounded-[32px] shadow-2xl p-8 space-y-8"
+        className="relative w-full sm:max-w-lg bg-white rounded-t-[32px] sm:rounded-[32px] shadow-2xl p-5 sm:p-8 space-y-6 sm:space-y-8 max-h-[calc(100dvh-1rem)] overflow-y-auto"
       >
         <div className="text-center space-y-2">
-          <div className="w-16 h-16 bg-accent/10 text-accent rounded-3xl flex items-center justify-center mx-auto mb-4">
+          <div className="w-14 h-14 sm:w-16 sm:h-16 bg-accent/10 text-accent rounded-3xl flex items-center justify-center mx-auto mb-4">
             <Download size={32} strokeWidth={2.5} />
           </div>
-          <h3 className="text-[24px] font-[800] tracking-[-1px] leading-tight">Unified Export</h3>
-          <p className="text-subtle text-[14px]">Choose your range and format</p>
+          <h3 className="text-[22px] sm:text-[24px] font-[800] tracking-[-1px] leading-tight">Unified Export</h3>
+          <p className="text-subtle text-[13px] sm:text-[14px]">Choose your data type, range, and format</p>
         </div>
 
         <div className="space-y-6">
@@ -277,39 +287,43 @@ export default function UnifiedExportModal({
           </div>
 
           <div className="space-y-3">
-             <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Quick Presets</label>
-             <div className="flex gap-2">
-                <button 
-                  onClick={() => setRange(getTodayRange())}
+            <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Range</label>
+            <div className="md:hidden">
+              <select
+                value={rangePreset}
+                onChange={e => handleSelectPreset(e.target.value as ExportRangePreset)}
+                className="w-full rounded-2xl border border-border bg-white px-4 py-3 text-[14px] font-semibold text-ink shadow-sm outline-none focus:ring-2 focus:ring-accent/20"
+              >
+                {[
+                  { id: 'today', label: 'Today' },
+                  { id: 'this_week', label: 'This Week' },
+                  { id: 'last_7_days', label: 'Last 7 Days' },
+                  { id: 'last_30_days', label: 'Last 30 Days' },
+                  { id: 'custom_range', label: 'Custom Range' },
+                ].map(option => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="hidden md:flex flex-wrap gap-2">
+              {(['today', 'this_week', 'last_7_days', 'last_30_days', 'custom_range'] as ExportRangePreset[]).map(preset => (
+                <button
+                  key={preset}
+                  onClick={() => handleSelectPreset(preset)}
                   className={cn(
                     'px-4 py-2 rounded-xl text-xs font-bold transition-colors',
-                    activePreset === 'today' ? 'bg-ink text-white' : 'bg-gray-50 hover:bg-gray-100 text-ink'
+                    activePreset === preset ? 'bg-ink text-white' : 'bg-gray-50 hover:bg-gray-100 text-ink'
                   )}
                 >
-                  Today
+                  {preset === 'today' ? 'Today' : preset === 'this_week' ? 'This Week' : preset === 'last_7_days' ? 'Last 7 Days' : preset === 'last_30_days' ? 'Last 30 Days' : 'Custom Range'}
                 </button>
-                <button 
-                  onClick={() => setRange({ start: sevenDaysAgo, end: today })}
-                  className={cn(
-                    'px-4 py-2 rounded-xl text-xs font-bold transition-colors',
-                    activePreset === 'last_7_days' ? 'bg-ink text-white' : 'bg-gray-50 hover:bg-gray-100 text-ink'
-                  )}
-                >
-                  Last 7 Days
-                </button>
-                <button 
-                  onClick={() => setRange({ start: thirtyDaysAgo, end: today })}
-                  className={cn(
-                    'px-4 py-2 rounded-xl text-xs font-bold transition-colors',
-                    activePreset === 'last_30_days' ? 'bg-ink text-white' : 'bg-gray-50 hover:bg-gray-100 text-ink'
-                  )}
-                >
-                  Last 30 Days
-                </button>
-             </div>
+              ))}
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1">
               <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Start Date</label>
               <div className="relative">
@@ -317,7 +331,7 @@ export default function UnifiedExportModal({
                 <input
                   type="date"
                   value={range.start}
-                  onChange={e => setRange(prev => ({ ...prev, start: e.target.value }))}
+                  onChange={e => handleRangeInputChange('start', e.target.value)}
                   className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-sm"
                 />
               </div>
@@ -329,7 +343,7 @@ export default function UnifiedExportModal({
                 <input
                   type="date"
                   value={range.end}
-                  onChange={e => setRange(prev => ({ ...prev, end: e.target.value }))}
+                  onChange={e => handleRangeInputChange('end', e.target.value)}
                   className="w-full pl-12 pr-4 py-4 bg-gray-50 rounded-2xl border-none focus:ring-2 focus:ring-accent transition-all text-sm"
                 />
               </div>
@@ -338,7 +352,7 @@ export default function UnifiedExportModal({
 
           <div className="space-y-3">
             <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Export Format</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
               <FormatButton 
                 active={formatType === 'csv'} 
                 onClick={() => setFormatType('csv')}
@@ -365,7 +379,7 @@ export default function UnifiedExportModal({
           {isWeightExport ? (
             <div className="flex gap-3 p-4 bg-amber-50 rounded-2xl border border-amber-100 italic text-[12px] text-amber-800">
               <Info size={18} className="shrink-0" />
-              Weight export is available as CSV only.
+              Weight export is available as CSV only, with Date, Weight, and Calories columns.
             </div>
           ) : formatType === 'pdf' && (
              <div className="flex gap-3 p-4 bg-blue-50 rounded-2xl border border-blue-100 italic text-[12px] text-blue-700">
