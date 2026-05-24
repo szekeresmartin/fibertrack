@@ -7,8 +7,6 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Plus,
-  Settings,
-  Database,
   Clock,
   ChevronRight,
   ChevronLeft,
@@ -23,27 +21,30 @@ import {
   Loader2,
   Lock,
   Download,
-  FileText,
   Calendar,
   Copy,
   BarChart2,
-  Scale
+  Scale,
+  MoreHorizontal,
+  SlidersHorizontal,
+  UtensilsCrossed,
 } from 'lucide-react';
 import { Food, Meal, DailyTotals } from './types';
 import { fetchFoodsFromSheets } from './lib/googleSheets';
 import { cn, calculateMealTotals, getFriendlyErrorMessage, getGlycemicLoadLabel, getFoodOrUnknown } from './lib/utils';
+import { generateRangeSummaryText } from './lib/exportUtils';
 import StatisticsView from './components/StatisticsView';
 import PlanView from './components/PlanView';
 import WeightView from './components/WeightView';
-import { downloadDayAsCSV, generateDaySummaryText } from './lib/exportUtils';
 import { buildMealItemWritePayloads, buildMealWritePayload, mapMealRecord } from './lib/mealItemUtils';
-import { format, addDays, isSameDay, isToday, startOfToday, subDays, parseISO, differenceInDays } from 'date-fns';
+import { format, addDays, isSameDay, isToday, subDays } from 'date-fns';
 import { computeStats, ProcessedStats } from './lib/statsUtils';
 import UnifiedExportModal from './components/UnifiedExportModal';
 import DatePickerModal from './components/DatePickerModal';
 import { supabase } from './lib/supabase';
 import { User } from '@supabase/supabase-js';
 import { getLocalDayBounds } from './lib/dateUtils';
+import { buildExportRange, type ExportRangePreset } from './lib/exportRange';
 
 // No mock authentication, fully relying on Supabase state.
 
@@ -73,7 +74,7 @@ function DayStrip({ selectedDate, onSelect, onOpenPicker }: DayStripProps) {
   return (
     <div 
       ref={containerRef}
-      className="flex gap-2 overflow-x-auto pb-4 pt-2 no-scrollbar scroll-smooth px-4 sm:px-0"
+      className="flex gap-1.5 overflow-x-auto pb-2 pt-1 no-scrollbar scroll-smooth px-3 sm:px-0 lg:gap-2 lg:pb-4 lg:pt-2"
       style={{ scrollSnapType: 'x proximity' }}
     >
       {days.map((day) => {
@@ -86,7 +87,7 @@ function DayStrip({ selectedDate, onSelect, onOpenPicker }: DayStripProps) {
             data-active={active}
             onClick={() => onSelect(day)}
             className={cn(
-              "flex flex-col items-center min-w-[56px] py-3 rounded-2xl transition-all active:scale-95",
+              "flex flex-col items-center min-w-[50px] py-2 rounded-2xl transition-all active:scale-95 lg:min-w-[56px] lg:py-3",
               active 
                 ? "bg-ink text-white shadow-lg scale-105" 
                 : "bg-white border border-border text-subtle hover:border-accent/40"
@@ -94,12 +95,12 @@ function DayStrip({ selectedDate, onSelect, onOpenPicker }: DayStripProps) {
             style={{ scrollSnapAlign: 'center' }}
           >
             <span className={cn(
-              "text-[10px] font-bold uppercase tracking-widest mb-1",
+              "text-[9px] font-bold uppercase tracking-widest mb-0.5 lg:text-[10px] lg:mb-1",
               today && !active && "text-accent"
             )}>
               {format(day, 'EEE')}
             </span>
-            <span className="text-[18px] font-extrabold leading-none">
+            <span className="text-[16px] font-extrabold leading-none lg:text-[18px]">
               {format(day, 'd')}
             </span>
             {today && !active && (
@@ -144,7 +145,10 @@ export default function App() {
   const [isDuplicateDayModalOpen, setIsDuplicateDayModalOpen] = useState(false);
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
-  const [statsRange, setStatsRange] = useState({ start: format(subDays(new Date(), 6), 'yyyy-MM-dd'), end: format(new Date(), 'yyyy-MM-dd') });
+  const [exportModalRange, setExportModalRange] = useState(() => buildExportRange('today'));
+  const [exportModalDataType, setExportModalDataType] = useState<'nutrition' | 'weight'>('nutrition');
+  const [exportModalFormat, setExportModalFormat] = useState<'csv' | 'text' | 'pdf'>('text');
+  const [mobileActionMenu, setMobileActionMenu] = useState<'more' | null>(null);
   const [statsCache, setStatsCache] = useState<Record<string, ProcessedStats>>({});
   const [isRecoveryMode, setIsRecoveryMode] = useState(false);
   const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
@@ -159,6 +163,63 @@ export default function App() {
       setTimeout(() => setToastMessage(null), 3000);
     } else {
       setTimeout(() => setToastMessage(null), 5000);
+    }
+  };
+
+  const openExportModal = (
+    preset: ExportRangePreset = 'today',
+    options: {
+      dataType?: 'nutrition' | 'weight';
+      formatType?: 'csv' | 'text' | 'pdf';
+    } = {}
+  ) => {
+    const nextRange = buildExportRange(preset);
+    setExportModalRange(nextRange);
+    setExportModalDataType(options.dataType ?? 'nutrition');
+    setExportModalFormat(options.formatType ?? (options.dataType === 'weight' ? 'csv' : 'text'));
+    setIsExportModalOpen(true);
+    setMobileActionMenu(null);
+  };
+
+  const fetchMealsForRange = async (startDate: string, endDate: string): Promise<Meal[]> => {
+    if (!user) return [];
+
+    const startBounds = getLocalDayBounds(startDate);
+    const endBounds = getLocalDayBounds(endDate);
+
+    const { data, error } = await supabase
+      .from('meals')
+      .select(`
+        *,
+        meal_items (*, food:foods(*))
+      `)
+      .eq('user_id', user.id)
+      .gte('created_at', startBounds.start.toISOString())
+      .lte('created_at', endBounds.end.toISOString());
+
+    if (error) {
+      throw error;
+    }
+
+    return (data || []).map((meal: any) => mapMealRecord(meal));
+  };
+
+  const copySummaryForRange = async (range: { start: string; end: string }, successMessage: string) => {
+    if (!user) return;
+
+    try {
+      const mealsForRange = await fetchMealsForRange(range.start, range.end);
+      if (mealsForRange.length === 0) {
+        showToast('No data found for this range', 'error');
+        return;
+      }
+
+      const summary = generateRangeSummaryText(mealsForRange, foods, range);
+      await navigator.clipboard.writeText(summary);
+      showToast(successMessage, 'success');
+    } catch (err) {
+      console.error('Failed to copy range summary:', err);
+      showToast('Failed to copy summary', 'error');
     }
   };
 
@@ -340,6 +401,10 @@ export default function App() {
     }
   }, [selectedDate, meals.length, view]);
 
+  useEffect(() => {
+    setMobileActionMenu(null);
+  }, [view]);
+
   const dailyTotals = useMemo(() => {
     return meals.reduce((acc, meal) => {
       const mealItems = (meal.items || []).map(item => ({
@@ -364,6 +429,8 @@ export default function App() {
       soluble_fiber: 0, insoluble_fiber: 0, total_fiber: 0, gl: 0
     });
   }, [meals, foods]);
+  const mobileFiberGoal = 35;
+  const mobileFiberProgress = Math.max(0, Math.min(100, (dailyTotals.total_fiber / mobileFiberGoal) * 100));
 
   const sortedMeals = useMemo(() => {
     return [...meals].sort((a, b) => a.time.localeCompare(b.time));
@@ -608,29 +675,6 @@ export default function App() {
     }
   };
 
-  const handleExport = () => {
-    const success = downloadDayAsCSV(selectedDate, meals, foods);
-    if (!success) {
-      showToast('No data to export for this day', 'error');
-    }
-  };
-
-  const handleCopySummary = async () => {
-    const summary = generateDaySummaryText(selectedDate, meals, foods);
-    if (!summary) {
-      showToast('No data to summarize for this day', 'error');
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(summary);
-      showToast('Summary copied to clipboard!', 'success');
-    } catch (err) {
-      console.error('Failed to copy summary:', err);
-      showToast('Failed to copy summary', 'error');
-    }
-  };
-
   if (sessionLoading) {
     return (
       <div className="min-h-screen bg-bg flex items-center justify-center">
@@ -648,7 +692,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-bg text-ink font-sans flex flex-col">
+    <div className="min-h-screen bg-bg text-ink font-sans flex flex-col pb-[calc(6.5rem+env(safe-area-inset-bottom))] lg:pb-0">
       {/* App Top Navigation (Desktop) */}
       <nav className="hidden lg:flex w-full bg-white border-b border-border px-6 py-4 items-center justify-between sticky top-0 z-50">
         {/* LEFT */}
@@ -721,71 +765,162 @@ export default function App() {
         </div>
       </header>
       )}
-      {/* Mobile header: compact date nav + fiber progress bar */}
-      <div className="lg:hidden sticky top-0 z-10 bg-card border-b border-border">
-        {/* Fiber progress row */}
-        <div className="px-5 pt-8 pb-4">
-          <div className="flex items-end justify-between mb-1.5">
-            <span className="text-[30px] font-[800] tracking-tight text-ink leading-none">{dailyTotals.total_fiber.toFixed(1)}<span className="text-[16px] text-subtle font-semibold ml-1">/ 35g</span></span>
-            <div className="flex items-center gap-3">
-              <button 
-                onClick={handleCopySummary}
-                className="p-2 -mr-1 text-subtle/40 hover:text-accent transition-colors"
-              >
-                <FileText size={18} />
-              </button>
-              <button 
-                onClick={() => setIsDuplicateDayModalOpen(true)}
-                className="p-2 -mr-1 text-subtle/40 hover:text-accent transition-colors"
-                title="Copy Day"
-              >
-                <Copy size={18} />
-              </button>
-              <button 
-                onClick={() => setView('statistics')}
-                className={cn(
-                  "p-2 -mr-1 transition-colors",
-                  view === 'statistics' ? "text-accent" : "text-subtle/40 hover:text-accent"
+      {/* Mobile header: card-based summary + actions */}
+      <div className="lg:hidden sticky top-0 z-30 bg-card/95 backdrop-blur border-b border-border">
+        <div className="px-3 pt-2 pb-2.5">
+          <div className="rounded-[22px] border border-border bg-white shadow-sm overflow-hidden">
+            <div className="px-3 pt-3 pb-2.5 space-y-2.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-subtle">
+                    Fiber intake {isToday(selectedDate) ? 'Today' : format(selectedDate, 'EEE, MMM d')}
+                  </div>
+                  <div className="mt-1 flex items-end gap-2">
+                    <span className="text-[30px] font-[800] tracking-[-0.04em] leading-none text-ink">
+                      {dailyTotals.total_fiber.toFixed(1)}
+                    </span>
+                    <span className="pb-0.5 text-[12px] font-semibold text-subtle">/ 35g</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setSelectedDate(new Date());
+                    setView('timeline');
+                  }}
+                  className={cn(
+                    'shrink-0 h-9 rounded-full px-3 text-[11px] font-bold uppercase tracking-[0.12em] border transition-colors',
+                    isToday(selectedDate)
+                      ? 'bg-ink text-white border-ink'
+                      : 'bg-white text-ink border-border hover:border-accent/40'
+                  )}
+                >
+                  Today
+                </button>
+              </div>
+
+              <div>
+                <div className="mb-1 flex items-center justify-between text-[9px] font-bold uppercase tracking-[0.14em] text-subtle">
+                  <span>Progress</span>
+                  <span>{Math.round(mobileFiberProgress)}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-gray-100">
+                  <div
+                    className="h-full rounded-full bg-emerald-500 transition-[width] duration-300"
+                    style={{ width: `${mobileFiberProgress}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-1.5">
+                <MobileStatTile label="Calories" value={Math.round(dailyTotals.calories).toLocaleString()} unit="kcal" />
+                <MobileStatTile label="Protein" value={Math.round(dailyTotals.protein)} unit="g" />
+                <MobileStatTile label="Fat" value={Math.round(dailyTotals.fat)} unit="g" />
+                <MobileStatTile label="GL" value={Math.round(dailyTotals.gl)} unit="" accent />
+              </div>
+
+              <div className="grid grid-cols-[1fr_auto] gap-2">
+                <button
+                  onClick={() => openExportModal('today')}
+                  className="flex h-10 items-center justify-center gap-2 rounded-2xl border border-ink bg-ink px-4 text-[13px] font-bold text-white transition-colors hover:bg-black"
+                >
+                  <Download size={16} />
+                  Export
+                </button>
+                <button
+                  onClick={() => setMobileActionMenu(prev => prev === 'more' ? null : 'more')}
+                  aria-expanded={mobileActionMenu === 'more'}
+                  className="flex h-10 items-center justify-center gap-2 rounded-2xl border border-border bg-white px-3 text-[13px] font-bold text-ink transition-colors hover:border-accent/40"
+                >
+                  <MoreHorizontal size={16} />
+                  More
+                </button>
+              </div>
+
+              <AnimatePresence>
+                {mobileActionMenu === 'more' && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -6 }}
+                    className="relative z-20 overflow-hidden rounded-3xl border border-border bg-white shadow-2xl"
+                  >
+                    <div className="grid grid-cols-1 divide-y divide-border/70">
+                      <button
+                        onClick={() => {
+                          setMobileActionMenu(null);
+                          openExportModal('today');
+                        }}
+                        className="flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50"
+                      >
+                        <SlidersHorizontal size={16} className="text-subtle" />
+                        <div className="min-w-0">
+                          <div className="text-[13px] font-bold text-ink">Range</div>
+                          <div className="text-[11px] text-subtle">Open export range presets</div>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setMobileActionMenu(null);
+                          void copySummaryForRange(buildExportRange('today'), 'Today summary copied to clipboard!');
+                        }}
+                        className="flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50"
+                      >
+                        <Copy size={16} className="text-subtle" />
+                        <div className="min-w-0">
+                          <div className="text-[13px] font-bold text-ink">Copy today summary</div>
+                          <div className="text-[11px] text-subtle">Current local day</div>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setMobileActionMenu(null);
+                          void copySummaryForRange(buildExportRange('this_week'), 'This week summary copied to clipboard!');
+                        }}
+                        className="flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50"
+                      >
+                        <Copy size={16} className="text-subtle" />
+                        <div className="min-w-0">
+                          <div className="text-[13px] font-bold text-ink">Copy this week summary</div>
+                          <div className="text-[11px] text-subtle">Monday to Sunday</div>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setMobileActionMenu(null);
+                          setIsDuplicateDayModalOpen(true);
+                        }}
+                        className="flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50"
+                      >
+                        <Calendar size={16} className="text-subtle" />
+                        <div className="min-w-0">
+                          <div className="text-[13px] font-bold text-ink">Duplicate meals</div>
+                          <div className="text-[11px] text-subtle">Copy the selected day</div>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setMobileActionMenu(null);
+                          setView('database');
+                        }}
+                        className="flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50"
+                      >
+                        <UtensilsCrossed size={16} className="text-subtle" />
+                        <div className="min-w-0">
+                          <div className="text-[13px] font-bold text-ink">Browse foods</div>
+                          <div className="text-[11px] text-subtle">Open the food database</div>
+                        </div>
+                      </button>
+                    </div>
+                  </motion.div>
                 )}
-              >
-                <BarChart2 size={18} />
-              </button>
-              <button 
-                onClick={() => setView('plan')}
-                className={cn(
-                  "p-2 -mr-1 transition-colors",
-                  view === 'plan' ? "text-accent" : "text-subtle/40 hover:text-accent"
-                )}
-              >
-                <Calendar size={18} />
-              </button>
-              <button 
-                onClick={() => setView(view === 'timeline' ? 'database' : 'timeline')}
-                className={cn(
-                  "p-2 -mr-1 transition-colors",
-                  view === 'database' ? "text-accent" : "text-subtle/40 hover:text-accent"
-                )}
-              >
-                {view === 'timeline' ? <Database size={18} /> : <Clock size={18} />}
-              </button>
-              <span className="text-[11px] font-bold text-subtle uppercase tracking-widest">{Math.round(Math.min(dailyTotals.total_fiber / 35 * 100, 100))}%</span>
+              </AnimatePresence>
+            </div>
+
+            <div className="border-t border-border/70 bg-[#FBFCFE] px-2 pb-2">
+              <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} onOpenPicker={() => setIsDatePickerOpen(true)} />
             </div>
           </div>
-          <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-accent rounded-full transition-all duration-500"
-              style={{ width: `${Math.min(dailyTotals.total_fiber / 35 * 100, 100)}%` }}
-            />
-          </div>
-          <div className="flex justify-between mt-2 text-[10px] text-subtle/60 font-semibold uppercase tracking-widest">
-            <span>{Math.round(dailyTotals.calories)} kcal</span>
-            <span>{Math.round(dailyTotals.protein)}g protein</span>
-            <span>{Math.round(dailyTotals.fat)}g fat</span>
-            <span className="text-accent">GL: {Math.round(dailyTotals.gl)}</span>
-          </div>
-        </div>
-        <div className="border-b border-border flex flex-col gap-2 pb-4 px-5 bg-white">
-          <DayStrip selectedDate={selectedDate} onSelect={setSelectedDate} onOpenPicker={() => setIsDatePickerOpen(true)} />
         </div>
       </div>
 
@@ -837,9 +972,9 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                <div className="relative px-6 pt-4 pb-28">
+                <div className="relative px-4 pt-2 pb-[calc(9rem+env(safe-area-inset-bottom))]">
                   {/* Vertical Timeline Line */}
-                  <div className="absolute left-[38px] top-6 bottom-32 w-[2px] bg-border/40" />
+                  <div className="absolute left-[30px] top-5 bottom-28 w-[2px] bg-border/40" />
                   
                   <div className="flex flex-col gap-2 relative">
                     {(() => {
@@ -856,7 +991,7 @@ export default function App() {
                         if (!indicatorAdded && isToday(selectedDate) && mealMin > nowMin) {
                           elements.push(
                             <div key="now-indicator-mobile" ref={nowIndicatorRef} className="py-2 flex items-center gap-3">
-                              <div className="w-2 h-2 rounded-full bg-accent animate-pulse ml-[17px] relative z-10" />
+                              <div className="w-2 h-2 rounded-full bg-accent animate-pulse ml-[9px] relative z-10" />
                               <span className="text-[10px] font-bold text-accent uppercase tracking-widest">Now</span>
                               <div className="h-px bg-accent/20 flex-1" />
                             </div>
@@ -898,7 +1033,7 @@ export default function App() {
                       if (!indicatorAdded && isToday(selectedDate)) {
                         elements.push(
                           <div key="now-indicator-bottom-mobile" ref={nowIndicatorRef} className="py-2 flex items-center gap-3">
-                            <div className="w-2 h-2 rounded-full bg-accent animate-pulse ml-[17px] relative z-10" />
+                            <div className="w-2 h-2 rounded-full bg-accent animate-pulse ml-[9px] relative z-10" />
                             <span className="text-[10px] font-bold text-accent uppercase tracking-widest">Now</span>
                             <div className="h-px bg-accent/20 flex-1" />
                           </div>
@@ -1188,6 +1323,9 @@ export default function App() {
         )}
       </main>
 
+      {/* Mobile Bottom Navigation */}
+      <MobileBottomNav view={view} onChange={setView} />
+
       {/* Floating Action Button */}
       {view === 'timeline' && (
         <button
@@ -1195,7 +1333,7 @@ export default function App() {
             setEditingMeal(null);
             setIsMealModalOpen(true);
           }}
-          className="fixed bottom-8 right-8 w-14 h-14 bg-green-600 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-green-700 transition-transform active:scale-95 z-20"
+          className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-4 sm:right-8 w-14 h-14 bg-green-600 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-green-700 transition-transform active:scale-95 z-50 lg:bottom-8"
         >
           <Plus size={28} />
         </button>
@@ -1251,7 +1389,9 @@ export default function App() {
             onClose={() => setIsExportModalOpen(false)}
             user_id={user?.id || ''}
             foods={foods}
-            initialRange={statsRange}
+            initialRange={exportModalRange}
+            initialDataType={exportModalDataType}
+            initialFormat={exportModalFormat}
             showToast={showToast}
           />
         )}
@@ -1526,6 +1666,62 @@ function StatCard({ label, value, unit, highlight = false, small = false }: Stat
   );
 }
 
+function MobileStatTile({ label, value, unit, accent = false }: { label: string; value: string | number; unit: string; accent?: boolean }) {
+  return (
+    <div className={cn(
+      "flex min-w-[calc(50%-0.375rem)] flex-1 items-center justify-between gap-2 rounded-full border px-3 py-2 bg-gray-50",
+      accent ? "border-accent/25 bg-accent/5" : "border-border"
+    )}>
+      <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-subtle">{label}</div>
+      <div className={cn("text-[15px] font-[800] leading-none", accent ? "text-accent" : "text-ink")}>
+        {value}
+        {unit ? <span className="ml-1 text-[10px] font-semibold text-subtle">{unit}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function MobileBottomNav({
+  view,
+  onChange,
+}: {
+  view: 'timeline' | 'database' | 'statistics' | 'plan' | 'weight';
+  onChange: (view: 'timeline' | 'database' | 'statistics' | 'plan' | 'weight') => void;
+}) {
+  const tabs = [
+    { id: 'timeline' as const, label: 'Dashboard', icon: Clock },
+    { id: 'statistics' as const, label: 'Statistics', icon: BarChart2 },
+    { id: 'plan' as const, label: 'Plan', icon: Calendar },
+    { id: 'weight' as const, label: 'Weight', icon: Scale },
+  ];
+
+  return (
+    <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-white/95 backdrop-blur-xl pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.06)]">
+      <div className="mx-auto grid max-w-2xl grid-cols-4 gap-1 px-2">
+        {tabs.map(tab => {
+          const Icon = tab.icon;
+          const active = view === tab.id;
+
+          return (
+            <button
+              key={tab.id}
+              onClick={() => onChange(tab.id)}
+              className={cn(
+                "flex flex-col items-center justify-center gap-1 rounded-2xl px-1 py-2 text-[11px] font-bold transition-colors",
+                active ? "text-accent bg-accent/8" : "text-subtle hover:text-ink hover:bg-gray-50"
+              )}
+              aria-current={active ? 'page' : undefined}
+            >
+              <Icon size={18} />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
 interface DuplicateMealModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -1761,22 +1957,31 @@ function MealCard({ meal, foods, isSelected, onClick, onEdit, onDelete, onDuplic
     >
       {/* Card header – always visible */}
       <button
-        className="w-full text-left p-3"
+        className="w-full text-left p-4"
         onClick={onClick}
       >
-        <div className="flex items-start justify-between gap-2">
+        <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
-            <h3 className="text-[16px] font-bold text-ink leading-tight truncate">
-              <span className="text-[11px] font-medium text-subtle/60 mr-2 font-mono uppercase transition-colors">{meal.time}</span>
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <span className="text-[11px] font-bold text-subtle/70 font-mono uppercase tracking-[0.14em]">{meal.time}</span>
+              {isNow && (
+                <span className="text-[10px] font-bold bg-accent text-white px-2 py-0.5 rounded-full whitespace-nowrap">Now</span>
+              )}
+            </div>
+            <h3 className="text-[16px] font-bold text-ink leading-snug break-words">
               {meal.name}
             </h3>
-            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-              <span className="text-[11px] font-bold bg-[#DCFCE7] text-[#166534] px-2 py-0.5 rounded-full">{totals.total_fiber.toFixed(1)}g fiber</span>
-              <span className={cn("text-[11px] font-bold px-2 py-0.5 rounded-full bg-gray-100", getGlycemicLoadLabel(totals.gl).color)}>GL: {Math.round(totals.gl)}</span>
-              <span className="text-[11px] text-subtle">{Math.round(totals.calories)} kcal • {Math.round(totals.protein)}P {Math.round(totals.carbs)}C {Math.round(totals.fat)}F</span>
-              {isNow && (
-                <span className="text-[10px] font-bold bg-accent text-white px-2 py-0.5 rounded-full">Now</span>
-              )}
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <span className="text-[11px] font-bold bg-[#DCFCE7] text-[#166534] px-2.5 py-1 rounded-full whitespace-nowrap">{totals.total_fiber.toFixed(1)}g fiber</span>
+              <span className={cn("text-[11px] font-bold px-2.5 py-1 rounded-full bg-gray-100 whitespace-nowrap", getGlycemicLoadLabel(totals.gl).color)}>
+                GL: {Math.round(totals.gl)}
+              </span>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-subtle">
+              <span>{Math.round(totals.calories)} kcal</span>
+              <span>{Math.round(totals.protein)}g protein</span>
+              <span>{Math.round(totals.carbs)}g carbs</span>
+              <span>{Math.round(totals.fat)}g fat</span>
             </div>
           </div>
           <ChevronRight
