@@ -4,6 +4,23 @@ import { parseLocalDateInput } from './dateUtils';
 export interface WeightLog {
   date: string; // YYYY-MM-DD
   weight: number;
+  weightKg?: number | null;
+  calories?: number | null;
+  proteinGrams?: number | null;
+  carbsGrams?: number | null;
+  fatGrams?: number | null;
+  alcoholGrams?: number | null;
+  activityTemplateId?: string | null;
+  steps?: number | null;
+  trainingMinutes?: number | null;
+  intensity?: 'low' | 'moderate' | 'high' | 'very_high' | null;
+  notes?: string | null;
+  trendWeightKg?: number | null;
+  isWeightOutlier?: boolean | null;
+  isCalorieOutlier?: boolean | null;
+  excludeFromAdaptiveTDEE?: boolean | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 /**
