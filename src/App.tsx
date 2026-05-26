@@ -208,6 +208,152 @@ export default function App() {
     });
   };
 
+  type DuplicateDayFailurePhase = 'source read phase' | 'meal insert phase' | 'meal_items insert phase' | 'rollback phase';
+
+  type DuplicateDayFailureLog = {
+    operationStep: string;
+    failingTable: string;
+    payload: unknown;
+    returnedData: unknown;
+    insertedMealIds: string[];
+    sourceMealIds: string[];
+    sourceDate: string;
+    targetDate: string;
+    keepOriginalMealTimes: boolean;
+    sourceMealCount: number;
+    sourceItemCount: number;
+    supabaseError: {
+      code?: string;
+      message?: string;
+      details?: string;
+      hint?: string;
+      rawMessage?: string;
+    };
+  };
+
+  const isDevMode = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
+
+  const serializeDuplicateDayLog = (log: DuplicateDayFailureLog) => {
+    try {
+      return JSON.stringify(log);
+    } catch (serializationError) {
+      return JSON.stringify({
+        operationStep: log.operationStep,
+        failingTable: log.failingTable,
+        serializationError: serializationError instanceof Error ? serializationError.message : String(serializationError),
+      });
+    }
+  };
+
+  const buildDuplicateDayErrorDetails = (error: unknown) => {
+    if (error && typeof error === 'object') {
+      const record = error as Record<string, unknown>;
+      return {
+        code: 'code' in record ? String(record.code ?? '') : undefined,
+        message: 'message' in record ? String(record.message ?? '') : undefined,
+        details: 'details' in record ? String(record.details ?? '') : undefined,
+        hint: 'hint' in record ? String(record.hint ?? '') : undefined,
+        rawMessage: String(record.message ?? record.details ?? record.hint ?? error ?? ''),
+      };
+    }
+
+    return {
+      rawMessage: String(error ?? ''),
+    };
+  };
+
+  const logDuplicateDayFailure = (
+    operationStep: DuplicateDayFailurePhase,
+    failingTable: string,
+    payload: unknown,
+    returnedData: unknown,
+    sourceDate: string,
+    targetDate: string,
+    keepOriginalMealTimes: boolean,
+    sourceMealCount: number,
+    sourceItemCount: number,
+    sourceMealIds: string[],
+    insertedMealIds: string[],
+    error: unknown
+  ) => {
+    if (!isDevMode) return;
+
+    const logObject: DuplicateDayFailureLog = {
+      operationStep,
+      failingTable,
+      payload,
+      returnedData,
+      insertedMealIds,
+      sourceMealIds,
+      sourceDate,
+      targetDate,
+      keepOriginalMealTimes,
+      sourceMealCount,
+      sourceItemCount,
+      supabaseError: buildDuplicateDayErrorDetails(error),
+    };
+
+    console.error('[Duplicate Day] Failure', logObject, serializeDuplicateDayLog(logObject));
+  };
+
+  const rollbackDuplicateDayInsertions = async (
+    insertedMealIds: string[],
+    sourceDate: string,
+    targetDate: string,
+    keepOriginalMealTimes: boolean,
+    sourceMealCount: number,
+    sourceItemCount: number,
+    sourceMealIds: string[]
+  ) => {
+    if (insertedMealIds.length === 0) return;
+
+    const { error: mealItemsRollbackError } = await supabase
+      .from('meal_items')
+      .delete()
+      .in('meal_id', insertedMealIds)
+      .select('id');
+
+    if (mealItemsRollbackError) {
+      logDuplicateDayFailure(
+        'rollback phase',
+        'meal_items',
+        { mealIds: insertedMealIds },
+        null,
+        sourceDate,
+        targetDate,
+        keepOriginalMealTimes,
+        sourceMealCount,
+        sourceItemCount,
+        sourceMealIds,
+        insertedMealIds,
+        mealItemsRollbackError
+      );
+    }
+
+    const { error: mealsRollbackError } = await supabase
+      .from('meals')
+      .delete()
+      .in('id', insertedMealIds)
+      .select('id');
+
+    if (mealsRollbackError) {
+      logDuplicateDayFailure(
+        'rollback phase',
+        'meals',
+        { ids: insertedMealIds },
+        null,
+        sourceDate,
+        targetDate,
+        keepOriginalMealTimes,
+        sourceMealCount,
+        sourceItemCount,
+        sourceMealIds,
+        insertedMealIds,
+        mealsRollbackError
+      );
+    }
+  };
+
   const fetchMealsForRange = async (startDate: string, endDate: string): Promise<Meal[]> => {
     if (!user) return [];
 
@@ -575,61 +721,156 @@ export default function App() {
 
   const handleDuplicateDay = async (targetDateStr: string, keepOriginalTimes: boolean) => {
     if (!user) return;
-    if (meals.length === 0) { showToast('No meals to duplicate today', 'error'); return; }
 
-    // Check for existing meals on target date
-    const { start: startOfTarget, end: endOfTarget } = getLocalDayBounds(targetDateStr);
-    
-    const { data: existingMeals, error: checkError } = await supabase
+    const sourceDateStr = format(selectedDate, 'yyyy-MM-dd');
+    const { start: sourceDayStart, end: sourceDayEnd } = getLocalDayBounds(sourceDateStr);
+    const duplicateDayErrorMessage = 'Could not duplicate this day. Please try again.';
+    const { data: sourceMealsRaw, error: sourceReadError } = await supabase
       .from('meals')
-      .select('id')
+      .select(`
+        *,
+        meal_items (*, food:foods(*))
+      `)
       .eq('user_id', user.id)
-      .gte('created_at', startOfTarget.toISOString())
-      .lte('created_at', endOfTarget.toISOString());
+      .gte('created_at', sourceDayStart.toISOString())
+      .lte('created_at', sourceDayEnd.toISOString());
 
-    if (checkError) {
-      console.error('Error checking meals:', checkError);
-      showToast('Failed to check existing meals on target date', 'error');
+    if (sourceReadError) {
+      logDuplicateDayFailure(
+        'source read phase',
+        'meals',
+        {
+          user_id: user.id,
+          sourceDate: sourceDateStr,
+        },
+        sourceMealsRaw,
+        sourceDateStr,
+        targetDateStr,
+        keepOriginalTimes,
+        0,
+        0,
+        [],
+        [],
+        sourceReadError
+      );
+      showToast(duplicateDayErrorMessage, 'error');
       return;
     }
 
-    if (existingMeals && existingMeals.length > 0) {
-      if (!window.confirm('Target day already has meals. Replace existing meals?')) {
-        return;
-      }
-      const existingIds = existingMeals.map(m => m.id);
-      const { error: deleteError } = await supabase
-        .from('meals')
-        .delete()
-        .in('id', existingIds);
-
-      if (deleteError) {
-        console.error('Error clearing existing meals:', deleteError);
-        showToast('Failed to clear existing meals', 'error');
-        return;
-      }
+    const sourceMeals = (sourceMealsRaw || []).map((meal: any) => mapMealRecord(meal));
+    if (sourceMeals.length === 0) {
+      showToast('No meals to duplicate today', 'error');
+      return;
     }
 
-    const mealsToInsert = meals.map(meal => {
+    const sourceMealCount = sourceMeals.length;
+    const sourceItemCount = sourceMeals.reduce((count, meal) => count + (meal.items?.length || 0), 0);
+    const sourceMealIds = sourceMeals.map((meal) => String(meal.id));
+
+    const mealsToInsert = sourceMeals.map((meal) => {
       const mealTime = keepOriginalTimes ? meal.time : '12:00';
-      return buildMealWritePayload(meal, user.id, `${targetDateStr}T${mealTime}`);
+      const { id: _sourceMealId, ...mealWithoutId } = meal as Meal & { id?: string };
+      const newMealId = crypto.randomUUID();
+      return buildMealWritePayload(
+        { ...mealWithoutId, id: newMealId, time: mealTime },
+        user.id,
+        `${targetDateStr}T${mealTime}`
+      );
     });
 
+    const insertedMealIds = mealsToInsert.map((meal) => String(meal.id ?? ''));
     const { data: insertedMeals, error: mealError } = await supabase.from('meals').insert(mealsToInsert).select();
-    if (mealError) { showToast(getFriendlyErrorMessage(mealError), 'error'); return; }
+    if (mealError) {
+      logDuplicateDayFailure(
+        'meal insert phase',
+        'meals',
+        mealsToInsert,
+        insertedMeals,
+        sourceDateStr,
+        targetDateStr,
+        keepOriginalTimes,
+        sourceMealCount,
+        sourceItemCount,
+        sourceMealIds,
+        insertedMealIds,
+        mealError
+      );
+      await rollbackDuplicateDayInsertions(
+        insertedMealIds,
+        sourceDateStr,
+        targetDateStr,
+        keepOriginalTimes,
+        sourceMealCount,
+        sourceItemCount,
+        sourceMealIds
+      );
+      showToast(duplicateDayErrorMessage, 'error');
+      return;
+    }
 
-    const itemsToInsert: any[] = [];
-    insertedMeals.forEach((newMeal: any, index: number) => {
-      const originalMeal = meals[index];
-      itemsToInsert.push(...buildMealItemWritePayloads(newMeal.id, originalMeal.items || [], foods));
+    const insertedMealRows = insertedMeals || [];
+
+    if (insertedMealRows.length !== mealsToInsert.length) {
+      const mismatchError = new Error(`Inserted meal count mismatch: expected ${mealsToInsert.length}, received ${insertedMealRows.length}`);
+      logDuplicateDayFailure(
+        'meal insert phase',
+        'meals',
+        mealsToInsert,
+        insertedMealRows,
+        sourceDateStr,
+        targetDateStr,
+        keepOriginalTimes,
+        sourceMealCount,
+        sourceItemCount,
+        sourceMealIds,
+        insertedMealIds,
+        mismatchError
+      );
+      await rollbackDuplicateDayInsertions(
+        insertedMealIds,
+        sourceDateStr,
+        targetDateStr,
+        keepOriginalTimes,
+        sourceMealCount,
+        sourceItemCount,
+        sourceMealIds
+      );
+      showToast(duplicateDayErrorMessage, 'error');
+      return;
+    }
+
+    const itemsToInsert: any[] = sourceMeals.flatMap((originalMeal, index) => {
+      const newMealId = insertedMealIds[index];
+      return buildMealItemWritePayloads(newMealId, originalMeal.items || [], foods);
     });
 
     if (itemsToInsert.length > 0) {
-      const { error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert);
+      const { data: insertedMealItems, error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert).select();
       if (itemsError) {
-        const ids = insertedMeals.map((m: any) => m.id);
-        await supabase.from('meals').delete().in('id', ids);
-        showToast(getFriendlyErrorMessage(itemsError), 'error');
+        logDuplicateDayFailure(
+          'meal_items insert phase',
+          'meal_items',
+          itemsToInsert,
+          insertedMealItems,
+          sourceDateStr,
+          targetDateStr,
+          keepOriginalTimes,
+          sourceMealCount,
+          sourceItemCount,
+          sourceMealIds,
+          insertedMealIds,
+          itemsError
+        );
+        await rollbackDuplicateDayInsertions(
+          insertedMealIds,
+          sourceDateStr,
+          targetDateStr,
+          keepOriginalTimes,
+          sourceMealCount,
+          sourceItemCount,
+          sourceMealIds
+        );
+        showToast(duplicateDayErrorMessage, 'error');
         return;
       }
     }

@@ -87,6 +87,7 @@ export function mapMealItem(raw: RawMealItem): MealItem {
     soluble_fiber: raw.soluble_fiber ?? undefined,
     insoluble_fiber: raw.insoluble_fiber ?? undefined,
     gi: raw.gi ?? undefined,
+    gl: raw.gl ?? undefined,
     is_vegetable: parseBooleanField(raw.is_vegetable),
     is_fruit: parseBooleanField(raw.is_fruit),
     is_plant_based: parseBooleanField(raw.is_plant_based),
@@ -154,30 +155,32 @@ export function buildMealItemWritePayloads(
   foods: Food[]
 ): MealItemWritePayload[] {
   return items.map((item) => {
-    const food = pickFoodForMealItem(item, foods);
+    const { id: _sourceItemId, ...itemWithoutId } = item as MealItem & { id?: unknown };
+    const food = pickFoodForMealItem(itemWithoutId, foods);
+    const quantity = Number(itemWithoutId.quantityGrams) || 0;
 
     return {
       meal_id: mealId,
-      food_id: item.is_custom ? null : item.foodId,
-      grams: Number(item.quantityGrams) || 0,
-      name: item.is_custom ? (item.name ?? null) : null,
-      calories: item.is_custom ? (item.calories ?? null) : (food?.calories ?? null),
-      protein: item.is_custom ? (item.protein ?? null) : (food?.protein ?? null),
-      carbs: item.is_custom ? (item.carbs ?? null) : (food?.carbs ?? null),
-      fat: item.is_custom ? (item.fat ?? null) : (food?.fat ?? null),
-      sugar: item.is_custom ? (item.sugar ?? null) : (food?.sugar ?? null),
-      saturated_fat: item.is_custom ? (item.saturated_fat ?? null) : (food?.saturated_fat ?? null),
-      total_fiber: item.is_custom
-        ? (item.total_fiber ?? item.fiber ?? null)
+      food_id: itemWithoutId.is_custom ? null : itemWithoutId.foodId,
+      grams: quantity,
+      name: itemWithoutId.is_custom ? (itemWithoutId.name ?? null) : null,
+      calories: itemWithoutId.is_custom ? (itemWithoutId.calories ?? null) : (food?.calories ?? null),
+      protein: itemWithoutId.is_custom ? (itemWithoutId.protein ?? null) : (food?.protein ?? null),
+      carbs: itemWithoutId.is_custom ? (itemWithoutId.carbs ?? null) : (food?.carbs ?? null),
+      fat: itemWithoutId.is_custom ? (itemWithoutId.fat ?? null) : (food?.fat ?? null),
+      sugar: itemWithoutId.is_custom ? (itemWithoutId.sugar ?? null) : (food?.sugar ?? null),
+      saturated_fat: itemWithoutId.is_custom ? (itemWithoutId.saturated_fat ?? null) : (food?.saturated_fat ?? null),
+      total_fiber: itemWithoutId.is_custom
+        ? (itemWithoutId.total_fiber ?? itemWithoutId.fiber ?? null)
         : (food?.total_fiber ?? null),
-      soluble_fiber: item.is_custom
-        ? (item.soluble_fiber ?? null)
+      soluble_fiber: itemWithoutId.is_custom
+        ? (itemWithoutId.soluble_fiber ?? null)
         : (food?.soluble_fiber ?? null),
-      insoluble_fiber: item.is_custom
-        ? (item.insoluble_fiber ?? null)
+      insoluble_fiber: itemWithoutId.is_custom
+        ? (itemWithoutId.insoluble_fiber ?? null)
         : (food?.insoluble_fiber ?? null),
-      gi: item.is_custom ? (item.gi ?? null) : (food?.gi ?? null),
-      is_custom: !!item.is_custom,
+      gi: itemWithoutId.is_custom ? (itemWithoutId.gi ?? null) : (food?.gi ?? null),
+      is_custom: !!itemWithoutId.is_custom,
     };
   });
 }

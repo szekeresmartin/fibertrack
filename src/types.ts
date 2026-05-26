@@ -46,6 +46,7 @@ export interface MealItem {
   soluble_fiber?: number;
   insoluble_fiber?: number;
   gi?: number;
+  gl?: number;
 }
 
 export interface Meal {
