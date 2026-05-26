@@ -11,6 +11,8 @@ import { cn, getFriendlyErrorMessage } from '../lib/utils';
 import { getLocalDayBounds, normalizeDateToLocal } from '../lib/dateUtils';
 import { mapMealRecord } from '../lib/mealItemUtils';
 import { buildWeightTableCsvFromInput, buildWeightTableFilename, type WeightTableExportInput } from '../lib/weightExport';
+import { buildBowelMovementCsv, buildBowelMovementFilename } from '../lib/bowelMovementExport';
+import { mapBowelMovementRow } from '../lib/bowelMovements';
 import type { DailyWeightActivityLog } from '../lib/weightAnalytics';
 import {
   buildExportRange,
@@ -31,7 +33,7 @@ interface UnifiedExportModalProps {
 }
 
 type ExportFormat = 'csv' | 'text' | 'pdf';
-type ExportDataType = 'nutrition' | 'weight';
+type ExportDataType = 'nutrition' | 'weight' | 'bowel_movements';
 
 export default function UnifiedExportModal({ 
   isOpen, onClose, user_id, foods, initialRange, initialDataType, initialFormat, showToast 
@@ -53,7 +55,7 @@ export default function UnifiedExportModal({
     setRange(nextRange);
     setRangePreset(inferExportRangePreset(nextRange, new Date()));
     setDataType(initialDataType ?? 'nutrition');
-    setFormatType(initialFormat ?? (initialDataType === 'weight' ? 'csv' : 'text'));
+    setFormatType(initialFormat ?? (initialDataType === 'weight' || initialDataType === 'bowel_movements' ? 'csv' : 'text'));
     setCopied(false);
   }, [isOpen, initialDataType, initialFormat, initialRange]);
 
@@ -64,10 +66,11 @@ export default function UnifiedExportModal({
     : { start: range.end, end: range.start };
 
   const isWeightExport = dataType === 'weight';
+  const isBowelExport = dataType === 'bowel_movements';
 
   const handleSelectDataType = (nextDataType: ExportDataType) => {
     setDataType(nextDataType);
-    setFormatType(nextDataType === 'weight' ? 'csv' : 'text');
+    setFormatType(nextDataType === 'weight' || nextDataType === 'bowel_movements' ? 'csv' : 'text');
   };
 
   const handleSelectPreset = (preset: ExportRangePreset) => {
@@ -86,6 +89,28 @@ export default function UnifiedExportModal({
     try {
       const startBounds = getLocalDayBounds(selectedRange.start);
       const endBounds = getLocalDayBounds(selectedRange.end);
+
+      if (isBowelExport) {
+        const { data, error } = await supabase
+          .from('bowel_movements')
+          .select('*')
+          .eq('user_id', user_id)
+          .gte('occurred_at', startBounds.start.toISOString())
+          .lte('occurred_at', endBounds.end.toISOString())
+          .order('occurred_at', { ascending: true });
+
+        if (error) throw error;
+        if (!data || data.length === 0) {
+          showToast('No data found for this range', 'error');
+          setIsExporting(false);
+          return;
+        }
+
+        const csv = buildBowelMovementCsv((data || []).map((row: Record<string, any>) => mapBowelMovementRow(row)));
+        downloadFile(`\uFEFF${csv}`, buildBowelMovementFilename(selectedRange.start, selectedRange.end), 'text/csv;charset=utf-8;');
+        showToast('Bowel movement CSV exported!', 'success');
+        return;
+      }
 
       if (!isWeightExport) {
         const { data, error } = await supabase
@@ -183,8 +208,8 @@ export default function UnifiedExportModal({
   };
 
   const handleCopy = async () => {
-    if (isWeightExport) {
-      showToast('Weight export is available as CSV only', 'error');
+    if (isWeightExport || isBowelExport) {
+      showToast(isBowelExport ? 'Bowel movement export is available as CSV only' : 'Weight export is available as CSV only', 'error');
       return;
     }
 
@@ -270,9 +295,9 @@ export default function UnifiedExportModal({
         <div className="space-y-6">
           <div className="space-y-3">
             <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Data Type</label>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <SelectorButton
-                active={!isWeightExport}
+                active={!isWeightExport && !isBowelExport}
                 onClick={() => handleSelectDataType('nutrition')}
                 label="Nutrition / Meals"
                 sub="Meals, summary, PDF"
@@ -282,6 +307,12 @@ export default function UnifiedExportModal({
                 onClick={() => handleSelectDataType('weight')}
                 label="Weight"
                 sub="Daily table CSV"
+              />
+              <SelectorButton
+                active={isBowelExport}
+                onClick={() => handleSelectDataType('bowel_movements')}
+                label="Bowel movements"
+                sub="CSV only"
               />
             </div>
           </div>
@@ -352,31 +383,42 @@ export default function UnifiedExportModal({
 
           <div className="space-y-3">
             <label className="text-[10px] font-bold text-subtle uppercase tracking-widest ml-1">Export Format</label>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-              <FormatButton 
-                active={formatType === 'csv'} 
-                onClick={() => setFormatType('csv')}
-                label="CSV"
-                sub="Sheets"
-              />
-              <FormatButton 
-                active={formatType === 'text'} 
-                onClick={() => setFormatType('text')}
-                label="Text"
-                sub={isWeightExport ? 'Unavailable' : 'Summary'}
-                disabled={isWeightExport}
-              />
-              <FormatButton 
-                active={formatType === 'pdf'} 
-                onClick={() => setFormatType('pdf')}
-                label="PDF"
-                sub={isWeightExport ? 'Unavailable' : 'Report'}
-                disabled={isWeightExport}
-              />
-            </div>
+            {isBowelExport ? (
+              <div className="rounded-2xl border border-border bg-gray-50 px-4 py-3 text-sm font-semibold text-subtle">
+                Bowel movement export is available as CSV only.
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                <FormatButton 
+                  active={formatType === 'csv'} 
+                  onClick={() => setFormatType('csv')}
+                  label="CSV"
+                  sub="Sheets"
+                />
+                <FormatButton 
+                  active={formatType === 'text'} 
+                  onClick={() => setFormatType('text')}
+                  label="Text"
+                  sub={isWeightExport ? 'Unavailable' : 'Summary'}
+                  disabled={isWeightExport}
+                />
+                <FormatButton 
+                  active={formatType === 'pdf'} 
+                  onClick={() => setFormatType('pdf')}
+                  label="PDF"
+                  sub={isWeightExport ? 'Unavailable' : 'Report'}
+                  disabled={isWeightExport}
+                />
+              </div>
+            )}
           </div>
           
-          {isWeightExport ? (
+          {isBowelExport ? (
+            <div className="flex gap-3 p-4 bg-amber-50 rounded-2xl border border-amber-100 italic text-[12px] text-amber-800">
+              <Info size={18} className="shrink-0" />
+              Bowel movement export is available as CSV only, with Date, Time, and Notes columns.
+            </div>
+          ) : isWeightExport ? (
             <div className="flex gap-3 p-4 bg-amber-50 rounded-2xl border border-amber-100 italic text-[12px] text-amber-800">
               <Info size={18} className="shrink-0" />
               Weight export is available as CSV only, with Date, Weight, and Calories columns.

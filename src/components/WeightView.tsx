@@ -52,6 +52,12 @@ import {
   useUpsertDailyWeightActivityLog,
   useWeightLogs,
 } from '../lib/queries/weightQueries';
+import {
+  useBowelMovements,
+  useDeleteBowelMovement,
+  useUpsertBowelMovement,
+} from '../lib/queries/bowelMovementQueries';
+import { formatBowelMovementDate, formatBowelMovementTime, type BowelMovement } from '../lib/bowelMovements';
 import type { BodyCompositionMeasurement } from '../lib/bodyComposition';
 import { toNullableNumber } from '../lib/bodyComposition';
 import {
@@ -65,6 +71,7 @@ interface WeightViewProps {
   selectedDate: Date;
   meals: Meal[];
   foods: Food[];
+  onOpenExportModal?: (preset: 'today' | 'this_week' | 'last_7_days' | 'last_30_days' | 'custom_range', options?: { dataType?: 'nutrition' | 'weight' | 'bowel_movements'; formatType?: 'csv' | 'text' | 'pdf' }) => void;
 }
 
 type TemplateMode = 'rest' | 'gym' | 'match' | 'hike' | 'custom';
@@ -116,6 +123,13 @@ interface BodyCompositionDraftState {
   notes: string;
 }
 
+interface BowelMovementDraftState {
+  id?: string;
+  date: string;
+  time: string;
+  notes: string;
+}
+
 const PROFILE_STORAGE_KEY = 'fibertrack_weight_profile_v1';
 const BODY_COMPOSITION_MEASUREMENT_SOURCE_DEFAULT = 'InBody';
 
@@ -142,6 +156,16 @@ function createBodyCompositionDraft(measurement?: BodyCompositionMeasurement | n
     ecwRatio: measurement?.ecwRatio?.toString() ?? '',
     bodyCellMassKg: measurement?.bodyCellMassKg?.toString() ?? '',
     notes: measurement?.notes ?? '',
+  };
+}
+
+function createBowelMovementDraft(entry?: BowelMovement | null): BowelMovementDraftState {
+  const sourceDate = entry?.occurredAt ? new Date(entry.occurredAt) : new Date();
+  return {
+    id: entry?.id,
+    date: format(sourceDate, 'yyyy-MM-dd'),
+    time: format(sourceDate, 'HH:mm'),
+    notes: entry?.notes ?? '',
   };
 }
 
@@ -466,7 +490,7 @@ function TemplateRow({
   );
 }
 
-export default function WeightView({ userId, meals, foods }: WeightViewProps) {
+export default function WeightView({ userId, meals, foods, onOpenExportModal }: WeightViewProps) {
   const today = useMemo(() => endOfDay(new Date()), []);
   const todayKey = normalizeDateToLocal(today);
   const monthStart = useMemo(() => startOfMonth(today), [today]);
@@ -476,11 +500,14 @@ export default function WeightView({ userId, meals, foods }: WeightViewProps) {
   const { data: weightLogs = [] } = useWeightLogs(userId);
   const { data: templates = [] } = useActivityDayTemplates(userId);
   const { data: bodyCompositionMeasurements = [] } = useBodyCompositionMeasurements(userId);
+  const { data: bowelMovements = [] } = useBowelMovements(userId);
   const saveLogMutation = useUpsertDailyWeightActivityLog();
   const saveTemplateMutation = useUpsertActivityDayTemplate();
   const deleteTemplateMutation = useDeleteActivityDayTemplate();
   const saveBodyCompositionMutation = useUpsertBodyCompositionMeasurement();
   const deleteBodyCompositionMutation = useDeleteBodyCompositionMeasurement();
+  const saveBowelMovementMutation = useUpsertBowelMovement();
+  const deleteBowelMovementMutation = useDeleteBowelMovement();
 
   const [profile, setProfile] = useState<WeightProfileState>(() => loadProfile());
   const [draft, setDraft] = useState<WeightDraftState>({
@@ -498,6 +525,8 @@ export default function WeightView({ userId, meals, foods }: WeightViewProps) {
   const [templateDraft, setTemplateDraft] = useState<TemplateDraftState | null>(null);
   const [isBodyCompositionModalOpen, setIsBodyCompositionModalOpen] = useState(false);
   const [bodyCompositionDraft, setBodyCompositionDraft] = useState<BodyCompositionDraftState | null>(null);
+  const [isBowelLogModalOpen, setIsBowelLogModalOpen] = useState(false);
+  const [bowelMovementDraft, setBowelMovementDraft] = useState<BowelMovementDraftState | null>(null);
   const [selectedWeightExportPeriod, setSelectedWeightExportPeriod] = useState<WeightExportPeriod>('30d');
 
   useEffect(() => {
@@ -717,6 +746,11 @@ export default function WeightView({ userId, meals, foods }: WeightViewProps) {
     setIsBodyCompositionModalOpen(true);
   };
 
+  const openBowelLogEditor = (entry?: BowelMovement) => {
+    setBowelMovementDraft(createBowelMovementDraft(entry ?? null));
+    setIsBowelLogModalOpen(true);
+  };
+
   const handleSaveBodyCompositionMeasurement = async () => {
     if (!bodyCompositionDraft) return;
 
@@ -751,6 +785,41 @@ export default function WeightView({ userId, meals, foods }: WeightViewProps) {
     } catch (error) {
       console.error('Failed to save body composition measurement:', error);
       setMessage({ text: 'Failed to save the body composition measurement.', type: 'error' });
+    }
+  };
+
+  const handleSaveBowelMovement = async () => {
+    if (!bowelMovementDraft) return;
+
+    const occurredAt = new Date(`${bowelMovementDraft.date}T${bowelMovementDraft.time}`);
+    if (Number.isNaN(occurredAt.getTime())) {
+      setMessage({ text: 'Enter a valid bowel movement date and time.', type: 'error' });
+      return;
+    }
+
+    try {
+      await saveBowelMovementMutation.mutateAsync({
+        userId,
+        occurredAt: occurredAt.toISOString(),
+        notes: bowelMovementDraft.notes.trim() ? bowelMovementDraft.notes.trim() : null,
+        id: bowelMovementDraft.id,
+      });
+      setMessage({ text: 'Bowel movement saved.', type: 'success' });
+      setIsBowelLogModalOpen(false);
+      setBowelMovementDraft(null);
+    } catch (error) {
+      console.error('Failed to save bowel movement:', error);
+      setMessage({ text: 'Failed to save the bowel movement entry.', type: 'error' });
+    }
+  };
+
+  const handleDeleteBowelMovement = async (entry: BowelMovement) => {
+    try {
+      await deleteBowelMovementMutation.mutateAsync({ userId, id: entry.id });
+      setMessage({ text: 'Bowel movement deleted.', type: 'success' });
+    } catch (error) {
+      console.error('Failed to delete bowel movement:', error);
+      setMessage({ text: 'Failed to delete the bowel movement entry.', type: 'error' });
     }
   };
 
@@ -1217,12 +1286,20 @@ export default function WeightView({ userId, meals, foods }: WeightViewProps) {
         title="Body Composition"
         subtitle="Latest InBody summary, measured BMR, and compact measurement history."
         action={
-          <button
-            onClick={() => openBodyCompositionEditor()}
-            className="inline-flex items-center gap-2 rounded-2xl bg-ink px-4 py-2.5 text-sm font-black text-white shadow-sm hover:opacity-95 transition-all"
-          >
-            <span>Add measurement</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => openBowelLogEditor()}
+              className="inline-flex items-center gap-2 rounded-2xl border border-border bg-white px-3 py-2 text-xs font-black uppercase tracking-widest text-subtle hover:text-ink hover:bg-gray-50 transition-all"
+            >
+              <span>Bowel log</span>
+            </button>
+            <button
+              onClick={() => openBodyCompositionEditor()}
+              className="inline-flex items-center gap-2 rounded-2xl bg-ink px-4 py-2.5 text-sm font-black text-white shadow-sm hover:opacity-95 transition-all"
+            >
+              <span>Add measurement</span>
+            </button>
+          </div>
         }
       >
         {latestBodyCompositionMeasurement ? (
@@ -1898,6 +1975,141 @@ export default function WeightView({ userId, meals, foods }: WeightViewProps) {
                   className="rounded-2xl bg-ink px-4 py-2.5 text-sm font-black text-white hover:opacity-95"
                 >
                   Save measurement
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isBowelLogModalOpen && bowelMovementDraft ? (
+          <div className="fixed inset-0 z-[220] flex items-end justify-center p-0 sm:items-center sm:p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-ink/60 backdrop-blur-md"
+              onClick={() => setIsBowelLogModalOpen(false)}
+            />
+            <motion.div
+              initial={{ opacity: 0, y: 28, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 28, scale: 0.98 }}
+              className="relative max-h-[92vh] w-full overflow-auto rounded-t-[2rem] border border-border bg-white p-5 shadow-2xl sm:max-w-2xl sm:rounded-[2rem] sm:p-6"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-subtle">Hidden log</div>
+                  <h3 className="mt-1 text-xl font-black text-ink">Bowel log</h3>
+                  <p className="text-sm text-subtle">Small, local-only entry for date, time, and notes.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {onOpenExportModal ? (
+                    <button
+                      onClick={() => onOpenExportModal('today', { dataType: 'bowel_movements', formatType: 'csv' })}
+                      className="rounded-xl border border-border bg-white px-3 py-2 text-xs font-black uppercase tracking-widest text-subtle hover:text-ink hover:bg-gray-50"
+                    >
+                      Export CSV
+                    </button>
+                  ) : null}
+                  <button
+                    onClick={() => setIsBowelLogModalOpen(false)}
+                    className="rounded-xl border border-border px-3 py-2 text-sm font-bold text-subtle hover:bg-gray-50 hover:text-ink"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-subtle">Date</label>
+                  <input
+                    type="date"
+                    value={bowelMovementDraft.date}
+                    onChange={(e) => setBowelMovementDraft((current) => (current ? { ...current, date: e.target.value } : current))}
+                    className="mt-2 w-full rounded-2xl border border-border bg-white px-4 py-3 text-sm font-semibold text-ink outline-none focus:ring-2 focus:ring-accent/20"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-subtle">Time</label>
+                  <input
+                    type="time"
+                    value={bowelMovementDraft.time}
+                    onChange={(e) => setBowelMovementDraft((current) => (current ? { ...current, time: e.target.value } : current))}
+                    className="mt-2 w-full rounded-2xl border border-border bg-white px-4 py-3 text-sm font-semibold text-ink outline-none focus:ring-2 focus:ring-accent/20"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-subtle">Notes</label>
+                  <textarea
+                    value={bowelMovementDraft.notes}
+                    onChange={(e) => setBowelMovementDraft((current) => (current ? { ...current, notes: e.target.value } : current))}
+                    rows={3}
+                    className="mt-2 w-full rounded-[1.5rem] border border-border bg-white px-4 py-3 text-sm font-medium text-ink outline-none focus:ring-2 focus:ring-accent/20"
+                    placeholder="Optional notes"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-5 rounded-[1.5rem] border border-border bg-gray-50/70 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.2em] text-subtle">Recent entries</div>
+                    <div className="mt-1 text-sm font-semibold text-subtle">Latest few logs stay easy to scan.</div>
+                  </div>
+                  <div className="text-xs font-semibold text-subtle">{bowelMovements.length} total</div>
+                </div>
+                <div className="mt-3 max-h-[260px] space-y-2 overflow-auto pr-1">
+                  {bowelMovements.slice(0, 5).length > 0 ? (
+                    bowelMovements.slice(0, 5).map((entry) => (
+                      <div key={entry.id} className="flex flex-col gap-3 rounded-2xl border border-border bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="font-black text-ink">{formatBowelMovementDate(entry.occurredAt)}</div>
+                            <MiniBadge label={formatBowelMovementTime(entry.occurredAt)} tone="bg-slate-50 text-slate-600 border-slate-100" />
+                          </div>
+                          <div className="mt-1 text-sm text-subtle">
+                            {entry.notes?.trim() ? entry.notes : 'No notes.'}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => openBowelLogEditor(entry)}
+                            className="rounded-xl border border-border bg-white px-3 py-2 text-sm font-bold text-ink hover:bg-gray-50 transition-all"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => void handleDeleteBowelMovement(entry)}
+                            className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm font-bold text-red-700 hover:bg-red-100 transition-all"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-border bg-gray-50 px-4 py-8 text-center text-sm text-subtle">
+                      No bowel movement entries yet.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-6 flex flex-wrap justify-end gap-2">
+                <button
+                  onClick={() => setIsBowelLogModalOpen(false)}
+                  className="rounded-2xl border border-border bg-white px-4 py-2.5 text-sm font-black text-ink hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveBowelMovement}
+                  className="rounded-2xl bg-ink px-4 py-2.5 text-sm font-black text-white hover:opacity-95"
+                >
+                  Save entry
                 </button>
               </div>
             </motion.div>

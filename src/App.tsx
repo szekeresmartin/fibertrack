@@ -34,7 +34,6 @@ import { fetchFoodsFromSheets } from './lib/googleSheets';
 import { cn, calculateMealTotals, getFriendlyErrorMessage, getGlycemicLoadLabel, getFoodOrUnknown } from './lib/utils';
 import { generateRangeSummaryText } from './lib/exportUtils';
 import StatisticsView from './components/StatisticsView';
-import PlanView from './components/PlanView';
 import WeightView from './components/WeightView';
 import { buildMealItemWritePayloads, buildMealWritePayload, mapMealRecord } from './lib/mealItemUtils';
 import { format, addDays, isSameDay, isToday, subDays } from 'date-fns';
@@ -133,7 +132,7 @@ export default function App() {
   const [sheetUrl, setSheetUrl] = useState<string>(() => {
     return localStorage.getItem('fiber_track_sheet_url') || '';
   });
-  const [view, setView] = useState<'timeline' | 'database' | 'statistics' | 'plan' | 'weight'>('timeline');
+  const [view, setView] = useState<'timeline' | 'database' | 'statistics' | 'weight'>('timeline');
   const [statsMeals, setStatsMeals] = useState<Meal[]>([]);
   const [statsDays, setStatsDays] = useState<7 | 30 | 90 | 3650>(7);
   const [isStatsLoading, setIsStatsLoading] = useState(false);
@@ -146,7 +145,7 @@ export default function App() {
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportModalRange, setExportModalRange] = useState(() => buildExportRange('today'));
-  const [exportModalDataType, setExportModalDataType] = useState<'nutrition' | 'weight'>('nutrition');
+  const [exportModalDataType, setExportModalDataType] = useState<'nutrition' | 'weight' | 'bowel_movements'>('nutrition');
   const [exportModalFormat, setExportModalFormat] = useState<'csv' | 'text' | 'pdf'>('text');
   const [mobileActionMenu, setMobileActionMenu] = useState<'more' | null>(null);
   const [statsCache, setStatsCache] = useState<Record<string, ProcessedStats>>({});
@@ -169,16 +168,44 @@ export default function App() {
   const openExportModal = (
     preset: ExportRangePreset = 'today',
     options: {
-      dataType?: 'nutrition' | 'weight';
+      dataType?: 'nutrition' | 'weight' | 'bowel_movements';
       formatType?: 'csv' | 'text' | 'pdf';
     } = {}
   ) => {
     const nextRange = buildExportRange(preset);
     setExportModalRange(nextRange);
     setExportModalDataType(options.dataType ?? 'nutrition');
-    setExportModalFormat(options.formatType ?? (options.dataType === 'weight' ? 'csv' : 'text'));
+    setExportModalFormat(options.formatType ?? (options.dataType === 'weight' || options.dataType === 'bowel_movements' ? 'csv' : 'text'));
     setIsExportModalOpen(true);
     setMobileActionMenu(null);
+  };
+
+  useEffect(() => {
+    if ((view as string) === 'plan') {
+      setView('timeline');
+    }
+  }, [view]);
+
+  const logDuplicateMealError = (operation: string, sourceMeal: Meal, targetDate: string, targetTime: string, error: unknown) => {
+    const isDev = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
+    if (!isDev) return;
+
+    const supabaseError = error && typeof error === 'object'
+      ? {
+          code: 'code' in error ? String((error as Record<string, unknown>).code ?? '') : undefined,
+          message: 'message' in error ? String((error as Record<string, unknown>).message ?? '') : undefined,
+          details: 'details' in error ? String((error as Record<string, unknown>).details ?? '') : undefined,
+          hint: 'hint' in error ? String((error as Record<string, unknown>).hint ?? '') : undefined,
+        }
+      : { message: String(error ?? '') };
+
+    console.error('[Meal duplicate] Supabase error', {
+      operation,
+      sourceMealId: sourceMeal.id,
+      targetDate,
+      targetTime,
+      supabaseError,
+    });
   };
 
   const fetchMealsForRange = async (startDate: string, endDate: string): Promise<Meal[]> => {
@@ -505,9 +532,10 @@ export default function App() {
     
     // Combine date and time in ISO format to avoid timezone issues
     const targetDate = new Date(`${targetDateStr}T${targetTime}`);
+    const { id: _sourceMealId, ...mealWithoutId } = meal as Meal & { id?: string };
 
     const mealPayload = buildMealWritePayload(
-      { ...meal, time: targetTime },
+      { ...mealWithoutId, time: targetTime },
       user.id,
       targetDate.toISOString()
     );
@@ -519,6 +547,7 @@ export default function App() {
       .single();
 
     if (mealError) {
+      logDuplicateMealError('insert meal', meal, targetDateStr, targetTime, mealError);
       showToast(getFriendlyErrorMessage(mealError), 'error');
       return;
     }
@@ -529,6 +558,7 @@ export default function App() {
       const { error: itemsError } = await supabase.from('meal_items').insert(itemsToInsert);
       
       if (itemsError) {
+        logDuplicateMealError('insert meal_items', meal, targetDateStr, targetTime, itemsError);
         // Rollback meal if items fail
         await supabase.from('meals').delete().eq('id', insertedMeal.id);
         showToast(getFriendlyErrorMessage(itemsError), 'error');
@@ -716,10 +746,6 @@ export default function App() {
           <button onClick={() => setView('statistics')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'statistics' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
             <BarChart2 size={16} />
             Statistics
-          </button>
-          <button onClick={() => setView('plan')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'plan' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
-            <Calendar size={16} />
-            Plan
           </button>
           <button onClick={() => setView('weight')} className={cn("flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-[13px] transition-all", view === 'weight' ? "bg-white text-ink shadow-sm" : "text-subtle hover:text-ink hover:bg-gray-100/50")}>
             <Scale size={16} />
@@ -943,9 +969,8 @@ export default function App() {
             selectedDate={selectedDate}
             meals={statsMeals}
             foods={foods}
+            onOpenExportModal={openExportModal}
           />
-        ) : view === 'plan' ? (
-          <PlanView foods={foods} user={user!} />
         ) : view === 'timeline' ? (
           <>
             {/* === MOBILE: Chronological list === */}
@@ -1685,19 +1710,18 @@ function MobileBottomNav({
   view,
   onChange,
 }: {
-  view: 'timeline' | 'database' | 'statistics' | 'plan' | 'weight';
-  onChange: (view: 'timeline' | 'database' | 'statistics' | 'plan' | 'weight') => void;
+  view: 'timeline' | 'database' | 'statistics' | 'weight';
+  onChange: (view: 'timeline' | 'database' | 'statistics' | 'weight') => void;
 }) {
   const tabs = [
     { id: 'timeline' as const, label: 'Dashboard', icon: Clock },
     { id: 'statistics' as const, label: 'Statistics', icon: BarChart2 },
-    { id: 'plan' as const, label: 'Plan', icon: Calendar },
     { id: 'weight' as const, label: 'Weight', icon: Scale },
   ];
 
   return (
     <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-white/95 backdrop-blur-xl pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-10px_30px_rgba(15,23,42,0.06)]">
-      <div className="mx-auto grid max-w-2xl grid-cols-4 gap-1 px-2">
+      <div className="mx-auto grid max-w-2xl grid-cols-3 gap-1 px-2">
         {tabs.map(tab => {
           const Icon = tab.icon;
           const active = view === tab.id;
