@@ -11,6 +11,7 @@ import {
   calculateFormulaBMR,
   calculateFormulaTDEE,
   calculateTemplateTDEEEstimates,
+  buildWeightChartSeries,
   detectWeightOutliers,
   resolveFormulaBodyFatPercent,
   type ActivityDayTemplate,
@@ -337,6 +338,74 @@ test('weight export range uses the selected period and filename matches the rang
   assert.equal(normalizeDateToLocal(rangeMonth.start), '2026-05-01');
   assert.equal(normalizeDateToLocal(rangeMonth.end), '2026-05-31');
   assert.equal(buildWeightTableFilename(rangeMonth), 'fibertrack-weight-table-2026-05-01-to-2026-05-31.csv');
+});
+
+test('weight chart series changes with the selected range', () => {
+  const referenceDate = new Date('2026-05-28T12:00:00');
+  const templates: ActivityDayTemplate[] = [];
+  const dailyIntake: Parameters<typeof buildWeightChartSeries>[1] = [];
+  const weightLogs: DailyWeightActivityLog[] = [
+    ...Array.from({ length: 11 }, (_, index) => {
+      const date = format(addDays(new Date('2026-01-01T12:00:00'), index * 2), 'yyyy-MM-dd');
+      return {
+        date,
+        weight: 92,
+        weightKg: 92,
+        calories: null,
+        activityTemplateId: null,
+        steps: null,
+        trainingMinutes: null,
+        intensity: null,
+        notes: null,
+        isWeightOutlier: false,
+        isCalorieOutlier: false,
+        excludeFromAdaptiveTDEE: false,
+      };
+    }),
+    ...Array.from({ length: 4 }, (_, index) => {
+      const date = format(addDays(new Date('2026-05-20T12:00:00'), index * 2), 'yyyy-MM-dd');
+      return {
+        date,
+        weight: 80 - index,
+        weightKg: 80 - index,
+        calories: null,
+        activityTemplateId: null,
+        steps: null,
+        trainingMinutes: null,
+        intensity: null,
+        notes: null,
+        isWeightOutlier: false,
+        isCalorieOutlier: false,
+        excludeFromAdaptiveTDEE: false,
+      };
+    }),
+  ];
+
+  const chart30d = buildWeightChartSeries(weightLogs, dailyIntake, templates, getWeightExportRange('30d', referenceDate).start, getWeightExportRange('30d', referenceDate).end);
+  const chart6m = buildWeightChartSeries(weightLogs, dailyIntake, templates, getWeightExportRange('6m', referenceDate).start, getWeightExportRange('6m', referenceDate).end);
+
+  assert.equal(chart30d.length, 30);
+  assert.equal(chart6m.length, 180);
+  assert.notEqual(chart30d[0].date, chart6m[0].date);
+
+  const chart30dWeights = chart30d.filter((point) => point.weightKg !== null);
+  const chart6mWeights = chart6m.filter((point) => point.weightKg !== null);
+
+  assert.equal(chart30dWeights.length, 4);
+  assert.equal(chart6mWeights.length, 15);
+  assert.notEqual(chart30dWeights[0]?.date, chart6mWeights[0]?.date);
+
+  const chart30dTrendValues = chart30d.filter((point) => point.trendWeightKg !== null).map((point) => point.trendWeightKg);
+  const chart6mTrendValues = chart6m.filter((point) => point.trendWeightKg !== null).map((point) => point.trendWeightKg);
+
+  assert.notEqual(chart30dTrendValues.length, chart6mTrendValues.length);
+
+  const lastTrend30d = chart30dTrendValues.at(-1);
+  const lastTrend6m = chart6mTrendValues.at(-1);
+
+  assert.ok(lastTrend30d !== undefined);
+  assert.ok(lastTrend6m !== undefined);
+  assert.notEqual(lastTrend30d, lastTrend6m);
 });
 
 test('weight export csv only includes date, weight, and calories with blanks for missing values', () => {

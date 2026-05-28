@@ -25,6 +25,7 @@ import {
 } from '../lib/weightExport';
 import {
   buildDailyIntakeFromMeals,
+  buildWeightChartSeries,
   buildWeightHubSeries,
   calculateAdaptiveTDEE,
   calculateEWMATrend,
@@ -271,6 +272,38 @@ function formatPercentValue(value: number | null | undefined, digits = 1) {
 
 function formatDateLabel(value: string) {
   return format(new Date(`${value}T00:00:00`), 'MMM d, yyyy');
+}
+
+function formatWeightChartDate(value: string, period: WeightExportPeriod) {
+  const date = new Date(`${value}T00:00:00`);
+
+  switch (period) {
+    case 'month':
+      return format(date, 'd');
+    case '30d':
+      return format(date, 'd MMM');
+    case '3m':
+      return format(date, 'MMM d');
+    case '6m':
+      return format(date, 'MMM d, yy');
+    default:
+      return format(date, 'd MMM');
+  }
+}
+
+function getWeightChartTickInterval(period: WeightExportPeriod) {
+  switch (period) {
+    case 'month':
+      return 4;
+    case '30d':
+      return 5;
+    case '3m':
+      return 13;
+    case '6m':
+      return 29;
+    default:
+      return 5;
+  }
 }
 
 function downloadCsvFile(content: string, filename: string) {
@@ -642,9 +675,26 @@ export default function WeightView({ userId, meals, foods, onOpenExportModal }: 
     [adaptiveLogs, finalAdaptiveTDEE, templates, today]
   );
 
+  const selectedWeightRange = useMemo(
+    () => getWeightExportRange(selectedWeightExportPeriod, today),
+    [selectedWeightExportPeriod, today]
+  );
+
+  const selectedWeightChartSeries = useMemo(
+    () =>
+      buildWeightChartSeries(
+        weightLogs.map((log) => ({ ...log, weightKg: Number(log.weightKg ?? log.weight) || null })),
+        dailyIntake,
+        templates,
+        selectedWeightRange.start,
+        selectedWeightRange.end
+      ),
+    [dailyIntake, selectedWeightRange.end, selectedWeightRange.start, templates, weightLogs]
+  );
+
   const monthChartData = useMemo(
     () =>
-      monthTrendSeries.map((point) => ({
+      selectedWeightChartSeries.map((point) => ({
         date: point.date,
         weight: point.weightKg,
         trendWeight: point.trendWeightKg,
@@ -652,12 +702,7 @@ export default function WeightView({ userId, meals, foods, onOpenExportModal }: 
         templateId: point.activityTemplateId,
         outlier: point.isWeightOutlier || point.isCalorieOutlier,
       })),
-    [monthTrendSeries]
-  );
-
-  const weightExportRange = useMemo(
-    () => getWeightExportRange(selectedWeightExportPeriod, today),
-    [selectedWeightExportPeriod, today]
+    [selectedWeightChartSeries]
   );
 
   const weightExportSeries = useMemo(
@@ -674,7 +719,7 @@ export default function WeightView({ userId, meals, foods, onOpenExportModal }: 
 
   const weightTableCsv = useMemo(() => buildWeightTableCsv(weightExportSeries), [weightExportSeries]);
 
-  const weightTableFilename = useMemo(() => buildWeightTableFilename(weightExportRange), [weightExportRange]);
+  const weightTableFilename = useMemo(() => buildWeightTableFilename(selectedWeightRange), [selectedWeightRange]);
 
   const handleExportWeightTable = () => {
     downloadCsvFile(`\uFEFF${weightTableCsv}`, weightTableFilename);
@@ -965,9 +1010,9 @@ export default function WeightView({ userId, meals, foods, onOpenExportModal }: 
   const measuredBMR = latestBodyCompositionMeasurement?.basalMetabolicRateKcal ?? null;
   const formulaMethod = Number.isFinite(formulaBodyFatPercent ?? NaN) ? 'Katch-McArdle' : 'Mifflin-St Jeor';
 
-  const [monthChartRef, monthChartSize] = useElementSize<HTMLDivElement>();
-  const hasMonthChartData = monthChartData.some((point) => point.weight !== null);
-  const canRenderMonthChart = hasMonthChartData && monthChartSize.width > 0 && monthChartSize.height > 0;
+  const [weightChartRef, weightChartSize] = useElementSize<HTMLDivElement>();
+  const hasWeightChartData = monthChartData.some((point) => point.weight !== null);
+  const canRenderWeightChart = hasWeightChartData && weightChartSize.width > 0 && weightChartSize.height > 0;
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 pb-24 space-y-6">
@@ -1391,8 +1436,8 @@ export default function WeightView({ userId, meals, foods, onOpenExportModal }: 
       </Card>
 
       <Card
-        title="Monthly weight chart"
-        subtitle="Daily body weight points for the current month with a simple trend line."
+        title="Weight chart"
+        subtitle="Daily body weight points for the selected range with a recomputed trend line."
         action={
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex flex-wrap items-center gap-1 rounded-2xl border border-border bg-gray-50 p-1">
@@ -1421,16 +1466,18 @@ export default function WeightView({ userId, meals, foods, onOpenExportModal }: 
         }
       >
         <div className="mb-4 rounded-2xl border border-border bg-gray-50/80 px-4 py-3 text-xs font-semibold text-subtle">
-          Export range: {normalizeDateToLocal(weightExportRange.start)} to {normalizeDateToLocal(weightExportRange.end)}
+          Export range: {normalizeDateToLocal(selectedWeightRange.start)} to {normalizeDateToLocal(selectedWeightRange.end)}
         </div>
-        <div ref={monthChartRef} className="h-[340px] w-full">
-          {canRenderMonthChart ? (
+        <div ref={weightChartRef} className="h-[340px] w-full">
+          {canRenderWeightChart ? (
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={monthChartData} margin={{ top: 8, right: 16, left: -10, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eef2f7" />
                 <XAxis
                   dataKey="date"
-                  tickFormatter={(value) => format(new Date(`${value}T00:00:00`), 'd')}
+                  tickFormatter={(value) => formatWeightChartDate(value, selectedWeightExportPeriod)}
+                  interval={getWeightChartTickInterval(selectedWeightExportPeriod)}
+                  minTickGap={12}
                   tick={{ fontSize: 12, fill: '#94a3b8' }}
                   axisLine={false}
                   tickLine={false}
@@ -1443,7 +1490,7 @@ export default function WeightView({ userId, meals, foods, onOpenExportModal }: 
                   tickFormatter={(value) => Number(value).toFixed(1)}
                 />
                 <Tooltip
-                  labelFormatter={(value) => format(new Date(`${value}T00:00:00`), 'MMMM d')}
+                  labelFormatter={(value) => formatWeightChartDate(value, selectedWeightExportPeriod)}
                   formatter={(value: number | string, name) => {
                     if (name === 'weight') return [formatKg(Number(value)).replace('kg', ''), 'Weight'];
                     if (name === 'trend') return [formatKg(Number(value)).replace('kg', ''), 'Trend'];
@@ -1471,12 +1518,12 @@ export default function WeightView({ userId, meals, foods, onOpenExportModal }: 
                   name="trend"
                 />
               </ComposedChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border bg-gray-50 px-4 py-8 text-center text-sm text-subtle">
-              {hasMonthChartData ? 'Chart is preparing its layout.' : 'No weight logs yet for this month.'}
-            </div>
-          )}
+          </ResponsiveContainer>
+        ) : (
+          <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border bg-gray-50 px-4 py-8 text-center text-sm text-subtle">
+            {hasWeightChartData ? 'Chart is preparing its layout.' : 'No weight logs yet for this range.'}
+          </div>
+        )}
         </div>
       </Card>
 

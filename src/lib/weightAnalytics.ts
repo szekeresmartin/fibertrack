@@ -695,6 +695,41 @@ export function buildWeightHubSeries(
   });
 }
 
+function filterLogsByDateRange(
+  logs: DailyWeightActivityLog[],
+  startDate: Date,
+  endDate: Date
+): DailyWeightActivityLog[] {
+  const start = startOfDay(startDate);
+  const end = startOfDay(endDate);
+
+  return logs
+    .map((log) => ({ ...log, date: toDateKey(log.date) }))
+    .filter((log) => {
+      const parsed = parseLocalDateInput(log.date);
+      return parsed !== null && parsed >= start && parsed <= end;
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export function buildWeightChartSeries(
+  logs: DailyWeightActivityLog[],
+  intake: WeightHubDailyIntake[],
+  templates: ActivityDayTemplate[],
+  startDate: Date,
+  endDate: Date
+): WeightHubSeriesPoint[] {
+  const rangeLogs = filterLogsByDateRange(logs, startDate, endDate);
+  const trendSource = findAdaptiveSeries(rangeLogs);
+  const trendByDate = new Map(trendSource.map((log) => [toDateKey(log.date), log.trendWeightKg ?? null]));
+  const logsWithTrend = rangeLogs.map((log) => ({
+    ...log,
+    trendWeightKg: trendByDate.get(toDateKey(log.date)) ?? null,
+  }));
+
+  return buildWeightHubSeries(logsWithTrend, intake, templates, startDate, endDate);
+}
+
 export function getDefaultActivityDayTemplates(userId: string): Array<Partial<ActivityDayTemplate> & { userId: string }> {
   return DEFAULT_TEMPLATE_KEYS.map((template) => ({
     userId,
