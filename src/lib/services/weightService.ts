@@ -83,7 +83,7 @@ function buildWeightEntryPayload(userId: string, date: string, entry: Partial<Da
 export async function fetchWeightLogs(userId: string): Promise<WeightLog[]> {
   const { data, error } = await supabase
     .from('weight_entries')
-    .select('*')
+    .select('date, weight')
     .eq('user_id', userId)
     .order('date', { ascending: true });
 
