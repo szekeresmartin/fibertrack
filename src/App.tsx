@@ -2844,8 +2844,12 @@ function MealModal({ isOpen, onClose, onSave, editingMeal, foods, existingMeals 
                         {food.name_en && <span className="text-xs text-gray-500 ml-1 font-normal">({food.name_en})</span>}
                         {food.gi != null && <span className={cn("ml-2 font-bold", food.gi < 56 ? "text-green-600" : food.gi < 70 ? "text-yellow-600" : "text-red-500")}>(GI: {food.gi})</span>}
                       </div>
-                      <div className="mt-1 text-xs text-subtle">
-                        {Math.round((food.calories * (Number(item.quantityGrams) || 0)) / 100)} kcal · {(food.total_fiber * Number(item.quantityGrams) / 100).toFixed(1)} g rost
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-subtle">
+                        <span>{Math.round((food.calories * (Number(item.quantityGrams) || 0)) / 100)} kcal</span>
+                        <span>{(food.total_fiber * Number(item.quantityGrams) / 100).toFixed(1)} g rost</span>
+                        <span>{(food.protein * Number(item.quantityGrams) / 100).toFixed(1)} g fehérje</span>
+                        <span>{(food.carbs * Number(item.quantityGrams) / 100).toFixed(1)} g szénhidrát</span>
+                        <span>{(food.fat * Number(item.quantityGrams) / 100).toFixed(1)} g zsír</span>
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
